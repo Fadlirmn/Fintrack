@@ -1,0 +1,8 @@
+# Konfigurasi deploy untuk Railway
+[build]
+builder = "nixpacks"
+buildCommand = "go build -o api cmd/api/main.go"
+
+[deploy]
+startCommand = "./api"
+restartPolicyType = "on-failure"

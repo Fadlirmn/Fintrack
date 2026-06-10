@@ -1,0 +1,49 @@
+# ============================================================
+#  .gitignore — FinTrack Project Root
+#  Referensi: Leo-bot-new/.gitignore + DreamAPI patterns
+# ============================================================
+
+# ── Credentials & Secrets ────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!tailwind.config.js
+!postcss.config.js
+
+# Firebase credentials (JANGAN COMMIT!)
+backend/configs/firebase-credentials.json
+backend/configs/*.json
+
+# ── Certificates & SSL ───────────────────────────────────────
+certbot/
+
+# ── Go ───────────────────────────────────────────────────────
+backend/api
+backend/bot
+backend/*.out
+
+# ── Node.js / Next.js ────────────────────────────────────────
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# ── Docker ───────────────────────────────────────────────────
+# (docker-compose.yml perlu di-commit)
+
+# ── Logs ─────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── OS files ─────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ── Diskusi dan notes lokal ─────────────────────────────────
+discussions/
+feedback.md

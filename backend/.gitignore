@@ -1,0 +1,18 @@
+# ── Go backend build output ───────────────────────────────────
+api
+bot
+*.out
+*.test
+
+# ── Credentials (JANGAN COMMIT!) ─────────────────────────────
+.env
+.env.*
+!.env.example
+configs/*.json
+configs/firebase-credentials.json
+
+# ── Go cache ─────────────────────────────────────────────────
+# (go.mod dan go.sum HARUS di-commit)
+
+# ── Logs ─────────────────────────────────────────────────────
+*.log
