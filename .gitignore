@@ -46,3 +46,7 @@ Thumbs.db
 
 # ── Diskusi dan notes lokal ─────────────────────────────────
 feedback.md
+
+# ── Agent files ──────────────────────────────────────────────
+.agents/
+
