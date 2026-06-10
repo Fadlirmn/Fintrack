@@ -1,16 +1,12 @@
 # ============================================================
-#  FinTrack — Docker Compose (Production VPS)
-#  Mode: Frontend → Vercel | Backend + Bot → VPS
-#  Referensi: DreamAPI_bot_Generative (logging config),
-#             DreamAPI_bot (volume pattern),
-#             Leo-bot-new (restart policy)
+#  FinTrack — Docker Compose (Cloudflare Tunnel Mode)
+#  Mode: Frontend → Vercel | Backend + Bot → VPS via Cloudflare
 # ============================================================
 
 services:
 
   # ─────────────────────────────────────────────
   #  Backend: Go REST API + Telegram Webhook Handler
-  #  (Frontend ada di Vercel, tidak perlu di sini)
   # ─────────────────────────────────────────────
   backend:
     build:
@@ -23,7 +19,6 @@ services:
     env_file:
       - ./backend/.env
     volumes:
-      # Firebase credentials (wajib ada sebelum deploy)
       - ./backend/configs:/app/configs:ro
     networks:
       - fintrack-net
@@ -40,21 +35,17 @@ services:
       start_period: 15s
 
   # ─────────────────────────────────────────────
-  #  Nginx: Reverse Proxy + SSL Termination
-  #  Hanya serve backend API (frontend → Vercel)
+  #  Nginx: Reverse Proxy (Hanya HTTP Internal)
   # ─────────────────────────────────────────────
   nginx:
     image: nginx:1.25-alpine
     container_name: fintrack-nginx
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
+    expose:
+      - "80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
-      - ./certbot/conf:/etc/letsencrypt:ro
-      - ./certbot/www:/var/www/certbot:ro
     networks:
       - fintrack-net
     depends_on:
@@ -66,23 +57,22 @@ services:
         max-file: "2"
 
   # ─────────────────────────────────────────────
-  #  Certbot: SSL Certificate Auto-Renewal
+  #  Cloudflare Tunnel Client
   # ─────────────────────────────────────────────
-  certbot:
-    image: certbot/certbot:latest
-    container_name: fintrack-certbot
-    volumes:
-      - ./certbot/conf:/etc/letsencrypt
-      - ./certbot/www:/var/www/certbot
-    # Renew certificates every 12 hours
-    entrypoint: >
-      /bin/sh -c "trap exit TERM;
-      while :; do
-        certbot renew --webroot -w /var/www/certbot --quiet;
-        sleep 12h & wait $${!};
-      done"
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: fintrack-tunnel
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+    networks:
+      - fintrack-net
+    depends_on:
+      - nginx
 
 networks:
   fintrack-net:
     driver: bridge
     name: fintrack-network
+
