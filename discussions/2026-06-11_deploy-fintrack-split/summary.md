@@ -1,23 +1,23 @@
-# Deployment FinTrack (Split Vercel & VPS)
+# Deployment FinTrack (Split Vercel & VPS via Cloudflare Tunnel)
 
 **Tanggal:** 2026-06-11  
 **Status:** dalam proses  
-**Versi:** v1
+**Versi:** v2
 
 ## Konteks
-Pemisahan deployment FinTrack: Backend Go & Bot di VPS, sedangkan Frontend Next.js di Vercel demi efisiensi dan keamanan.
+Migrasi setup deployment VPS menggunakan Cloudflare Tunnel (`cloudflared`) dengan domain `server.home-sumbul.my.id`.
 
 ## Keputusan & Hasil
-- Docker Compose di VPS disederhanakan (hanya backend Go, Nginx, Certbot).
-- CORS di Go backend dikonfigurasi dinamis menggunakan env variable `ALLOWED_ORIGINS` untuk mendukung domain Vercel.
-- Perbaikan kompatibilitas Firestore API (`iter.Stop()`, commit batch).
-- Script automasi `deploy.sh` dan `vps-setup.sh` disiapkan di VPS.
+- Menghapus service `certbot` dari Docker Compose; SSL diurus oleh Cloudflare Edge.
+- Menutup port publik Nginx (`80` & `443`) untuk meminimalkan attack surface pada VPS.
+- Menambahkan service `cloudflared` ke dalam network Docker Compose internal.
+- Membuat script deployment otomatis `deploy-tunnel.sh` yang langsung membuild backend, me-route traffic, dan mendaftarkan webhook.
+- Memperbarui file `.env` dan Nginx virtual host sesuai domain `server.home-sumbul.my.id`.
 
 ## Tindak Lanjut
-- [ ] Push repository backend & frontend ke GitHub masing-masing.
-- [ ] Deploy frontend di Vercel dengan env `NEXT_PUBLIC_API_URL`.
-- [ ] Jalankan `vps-setup.sh` dan `deploy.sh` di VPS untuk backend.
-- [ ] Masukkan URL Vercel ke `ALLOWED_ORIGINS` backend di VPS.
+- [ ] Hubungkan connector tunnel Cloudflare Zero Trust dan salin `TUNNEL_TOKEN`.
+- [ ] Buat file `.env` di root VPS dengan variabel `TUNNEL_TOKEN`.
+- [ ] Jalankan `./deploy-tunnel.sh server.home-sumbul.my.id` di VPS.
 
 ---
 *Dibuat otomatis oleh agent · maks. 200 kata*
