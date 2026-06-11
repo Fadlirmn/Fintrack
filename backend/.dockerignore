@@ -3,7 +3,6 @@ api
 bot
 *.out
 *.test
-go.sum
 
 # ── Credentials ──────────────────────────────────────────────
 .env
