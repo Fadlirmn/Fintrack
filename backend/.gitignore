@@ -1,6 +1,6 @@
 # ── Go backend build output ───────────────────────────────────
-api
-bot
+/api
+/bot
 *.out
 *.test
 

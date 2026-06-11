@@ -2,6 +2,11 @@
 
 Semua perubahan penting pada proyek FinTrack dicatat di sini.
 
+## [v1.2.1] - 2026-06-11
+
+### Fixed
+- `[Fixed]` Masalah CORS preflight OPTIONS request dengan memangkas trailing slash secara otomatis pada konfigurasi `ALLOWED_ORIGINS` di backend (`main.go`).
+
 ## [v1.2.0] - 2026-06-11
 
 ### Removed
