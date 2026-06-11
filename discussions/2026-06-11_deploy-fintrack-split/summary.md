@@ -2,22 +2,21 @@
 
 **Tanggal:** 2026-06-11  
 **Status:** selesai  
-**Versi:** v4
+**Versi:** v5
 
 ## Konteks
-Migrasi arsitektur split deployment FinTrack (Vercel & VPS via Cloudflare Tunnel) dan integrasi sistem personalisasi keuangan di dashboard.
+Migrasi arsitektur split deployment FinTrack (Vercel & VPS via Cloudflare Tunnel), integrasi sistem personalisasi keuangan di dashboard, dan perbaikan kegagalan CORS preflight.
 
 ## Keputusan & Hasil
-- Mengganti Certbot dan menghapus Nginx dari Docker Compose; Cloudflare Tunnel langsung diarahkan ke backend Go (`127.0.0.1:8080`) via localhost.
+- Mengganti Certbot dan menghapus Nginx dari Docker Compose; Cloudflare Tunnel diarahkan ke backend Go via localhost.
 - Keamanan VPS ditingkatkan dengan menutup port publik HTTP/HTTPS (80/443) pada firewall UFW.
-- Personalisasi keuangan terintegrasi: target tabungan (`wealth_goal`) dan nominal pendapatan bulanan (`monthly_income`) disimpan permanen di Firestore database per user.
-- Memperbaiki error build Docker (.dockerignore untuk `go.sum` dan `cmd/api` folder).
-- Subdomain diubah dari `server` menjadi `fintrack.home-sumbul.my.id`.
+- Personalisasi keuangan terintegrasi dengan Firestore database.
+- Memperbaiki kegagalan build Docker dengan memperbaiki `.dockerignore`.
+- Mengatasi kegagalan CORS preflight dengan otomatis memangkas trailing slash pada `ALLOWED_ORIGINS` di backend Go.
+- Memperbaiki `.gitignore` backend agar tidak mengabaikan direktori source `cmd/api` dan `cmd/bot`.
 
 ## Tindak Lanjut
-- [ ] Sesuaikan rute Public Hostname di tunnel lokal server ke `http://localhost:8080`.
-- [ ] Jalankan `./deploy-tunnel.sh fintrack.home-sumbul.my.id` di server.
-- [ ] Perbarui `NEXT_PUBLIC_API_URL` di Vercel ke domain baru dan redeploy.
+- [ ] Jalankan pull dan rebuild kontainer backend di VPS.
 
 ---
 *Dibuat otomatis oleh agent · maks. 200 kata*
