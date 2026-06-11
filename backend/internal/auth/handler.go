@@ -182,8 +182,8 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		Expires:  time.Unix(0, 0),
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   h.cfg.Env == "production",
-		SameSite: http.SameSiteLaxMode,
+		Secure:   true,
+		SameSite: http.SameSiteNoneMode,
 	})
 
 	w.Header().Set("Content-Type", "application/json")
@@ -327,8 +327,8 @@ func (h *AuthHandler) setSessionCookie(w http.ResponseWriter, token string) {
 		Expires:  time.Now().Add(7 * 24 * time.Hour),
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   h.cfg.Env == "production",
-		SameSite: http.SameSiteLaxMode,
+		Secure:   true,
+		SameSite: http.SameSiteNoneMode,
 	})
 }
 

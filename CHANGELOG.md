@@ -6,6 +6,7 @@ Semua perubahan penting pada proyek FinTrack dicatat di sini.
 
 ### Fixed
 - `[Fixed]` Masalah CORS preflight OPTIONS request dengan memangkas trailing slash secara otomatis pada konfigurasi `ALLOWED_ORIGINS` di backend (`main.go`).
+- `[Fixed]` Konfigurasi cookie session menjadi `SameSite=None` dan `Secure=true` untuk memungkinkan otentikasi lintas origin (split deployment).
 
 ## [v1.2.0] - 2026-06-11
 
