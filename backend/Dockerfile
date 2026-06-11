@@ -1,7 +1,7 @@
 # ============================================================
 # Stage 1: Builder — compile Go binary
 # ============================================================
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 # Install git (needed for go mod download with private repos)
 RUN apk add --no-cache git ca-certificates tzdata
@@ -36,10 +36,6 @@ WORKDIR /app
 
 # Copy compiled binary from builder stage
 COPY --from=builder /app/api .
-
-# Copy Firebase credentials directory (mounted as volume in production)
-RUN mkdir -p /app/configs
-
 # Use non-root user
 USER fintrack
 
