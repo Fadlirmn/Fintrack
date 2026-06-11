@@ -1,21 +1,20 @@
 # FinTrack — Backend & Deployment
 
-Repositori ini berisi backend API (Go) dan modul bot Telegram untuk aplikasi pelacakan keuangan **FinTrack**, serta seluruh konfigurasi deployment VPS menggunakan Docker Compose & Nginx.
+Repositori ini berisi backend API (Go) dan modul bot Telegram untuk aplikasi pelacakan keuangan **FinTrack**, serta seluruh konfigurasi deployment VPS menggunakan Docker Compose & Cloudflare Tunnel.
 
 ## 🛠️ Tech Stack
 - **Language**: Go (Golang)
 - **Database**: Firebase Firestore
 - **Framework**: Standard Go HTTP Server (Mux)
-- **Deployment**: Docker Compose, Nginx (Reverse Proxy), Certbot (SSL)
+- **Deployment**: Docker Compose, Cloudflare Tunnel (SSL Termination)
 - **Integration**: Telegram Bot Webhook API
 
 ---
 
 ## 📁 Struktur Folder
 - `backend/` — Source code utama Go backend API & Telegram Bot
-- `nginx/` — Konfigurasi server Nginx (SSL, Reverse Proxy, CORS whitelist)
 - `vps-setup.sh` — Script setup awal VPS (Docker & Firewall)
-- `deploy.sh` — Script deployment & registrasi SSL/Webhook satu-klik
+- `deploy-tunnel.sh` — Script deployment & registrasi Webhook satu-klik menggunakan Cloudflare Tunnel
 
 ---
 
@@ -31,7 +30,7 @@ sudo bash vps-setup.sh
 # 2. Upload credentials & isi .env di folder backend/
 
 # 3. Jalankan deploy script
-./deploy.sh api.domain.com email@kamu.com
+./deploy-tunnel.sh server.home-sumbul.my.id
 ```
 
 ---
@@ -52,4 +51,4 @@ sudo bash vps-setup.sh
 ## 🔒 Security
 - Seluruh kredensial sensitif Firebase (`firebase-credentials.json`) dan `.env` tidak di-commit ke Git.
 - Endpoint webhook Telegram diamankan dengan verifikasi token rahasia `X-Telegram-Bot-Api-Secret-Token`.
-- Nginx mengimplementasikan *rate limiting* untuk mencegah serangan brute-force.
+- Cloudflare Tunnel melindungi VPS dengan menutup seluruh port masuk umum, menyisakan hanya port outbound aman untuk komunikasi dengan Cloudflare Edge.

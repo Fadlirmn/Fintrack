@@ -84,10 +84,8 @@ ufw --force reset
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow ssh
-ufw allow 80/tcp     # HTTP
-ufw allow 443/tcp    # HTTPS
 ufw --force enable
-success "Firewall configured: SSH, HTTP(80), HTTPS(443) allowed."
+success "Firewall configured: Only SSH (22) allowed (Cloudflare Tunnel operates outbound)."
 
 # ── 5. Create project directory ──────────────────────────────
 info "Creating project directory /opt/fintrack..."
@@ -113,11 +111,10 @@ echo "       cd /opt/fintrack"
 echo "       git clone <your-repo-url> ."
 echo "  3. Copy file credentials:"
 echo "       cp /path/to/firebase-credentials.json backend/configs/"
-echo "  4. Copy dan isi .env files:"
+echo "  4. Copy dan isi .env file:"
 echo "       cp backend/.env.example backend/.env"
-echo "       cp frontend/.env.example frontend/.env"
+# (removed frontend instructions since frontend is deployed on Vercel now)
 echo "       nano backend/.env"
-echo "       nano frontend/.env"
-echo "  5. Jalankan deploy:"
-echo "       ./deploy.sh your-domain.com your@email.com"
+echo "  5. Jalankan deploy (Cloudflare Tunnel):"
+echo "       ./deploy-tunnel.sh your-domain.com"
 echo ""

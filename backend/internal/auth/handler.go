@@ -79,9 +79,11 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	userID := userRef.ID
 
 	_, err = userRef.Set(ctx, map[string]interface{}{
-		"email":         req.Email,
-		"password_hash": string(hashedPassword),
-		"created_at":    time.Now(),
+		"email":          req.Email,
+		"password_hash":  string(hashedPassword),
+		"monthly_income": int64(10000000), // Default Rp 10.000.000
+		"wealth_goal":    int64(30),       // Default 30%
+		"created_at":     time.Now(),
 	})
 	if err != nil {
 		h.writeJSONError(w, "Failed to save user account", http.StatusInternalServerError)
@@ -198,6 +200,24 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	// Ambil data user dari Firestore untuk mendapatkan parameter personalisasi keuangan
+	userDoc, err := h.db.Collection("users").Doc(userID).Get(ctx)
+	var monthlyIncome int64 = 10000000 // default
+	var wealthGoal int64 = 30          // default
+	if err == nil && userDoc.Exists() {
+		if val, err := userDoc.DataAt("monthly_income"); err == nil {
+			if intVal, ok := val.(int64); ok {
+				monthlyIncome = intVal
+			}
+		}
+		if val, err := userDoc.DataAt("wealth_goal"); err == nil {
+			if intVal, ok := val.(int64); ok {
+				wealthGoal = intVal
+			}
+		}
+	}
+
 	isLinked := false
 	var telegramChatID string
 
@@ -216,6 +236,8 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 		"email":            email,
 		"telegram_linked":  isLinked,
 		"telegram_chat_id": telegramChatID,
+		"monthly_income":   monthlyIncome,
+		"wealth_goal":      wealthGoal,
 	})
 }
 
@@ -250,6 +272,51 @@ func (h *AuthHandler) GenerateLinkCode(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"code":       code,
 		"expires_at": expiresAt.Format(time.RFC3339),
+	})
+}
+
+// UpdateProfile modifies user financial settings (monthly income and saving goal)
+func (h *AuthHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, _, ok := GetUserFromContext(r.Context())
+	if !ok {
+		h.writeJSONError(w, "Access token missing or invalid", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		MonthlyIncome int64 `json:"monthly_income"`
+		WealthGoal    int64 `json:"wealth_goal"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeJSONError(w, "Invalid input data", http.StatusBadRequest)
+		return
+	}
+
+	if req.MonthlyIncome < 0 || req.WealthGoal < 0 || req.WealthGoal > 100 {
+		h.writeJSONError(w, "Invalid parameters for income or target goal", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	userRef := h.db.Collection("users").Doc(userID)
+
+	_, err := userRef.Update(ctx, []firestore.Update{
+		{Path: "monthly_income", Value: req.MonthlyIncome},
+		{Path: "wealth_goal", Value: req.WealthGoal},
+	})
+	if err != nil {
+		h.writeJSONError(w, "Failed to update financial profile", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"message": "Financial profile updated successfully",
 	})
 }
 

@@ -1,23 +1,23 @@
-# Deployment FinTrack (Split Vercel & VPS via Cloudflare Tunnel)
+# Deployment & Personalised Dashboard FinTrack
 
 **Tanggal:** 2026-06-11  
-**Status:** dalam proses  
-**Versi:** v2
+**Status:** selesai  
+**Versi:** v3
 
 ## Konteks
-Migrasi setup deployment VPS menggunakan Cloudflare Tunnel (`cloudflared`) dengan domain `server.home-sumbul.my.id`.
+Migrasi arsitektur split deployment FinTrack (Vercel & VPS via Cloudflare Tunnel) dan integrasi sistem personalisasi keuangan di dashboard.
 
 ## Keputusan & Hasil
-- Menghapus service `certbot` dari Docker Compose; SSL diurus oleh Cloudflare Edge.
-- Menutup port publik Nginx (`80` & `443`) untuk meminimalkan attack surface pada VPS.
-- Menambahkan service `cloudflared` ke dalam network Docker Compose internal.
-- Membuat script deployment otomatis `deploy-tunnel.sh` yang langsung membuild backend, me-route traffic, dan mendaftarkan webhook.
-- Memperbarui file `.env` dan Nginx virtual host sesuai domain `server.home-sumbul.my.id`.
+- Mengganti Certbot dengan Cloudflare Tunnel (`cloudflared`) untuk akses SSL aman internal tanpa membuka port publik VPS.
+- Integrasi sistem login dashboard berbasis HttpOnly Cookie JWT.
+- Personalisasi keuangan terintegrasi: data pendapatan bulanan (`monthly_income`) dan target tabungan (`wealth_goal`) kini disimpan permanen di database Firestore per user.
+- Menambahkan route `PUT /api/v1/auth/profile` di backend Go dan interaksi form simpan di frontend Next.js.
+- Clean up file `.env.example` frontend dari referensi Firebase SDK client.
 
 ## Tindak Lanjut
-- [ ] Hubungkan connector tunnel Cloudflare Zero Trust dan salin `TUNNEL_TOKEN`.
-- [ ] Buat file `.env` di root VPS dengan variabel `TUNNEL_TOKEN`.
-- [ ] Jalankan `./deploy-tunnel.sh server.home-sumbul.my.id` di VPS.
+- [ ] Daftarkan webhook Telegram menggunakan domain `server.home-sumbul.my.id`.
+- [ ] Deploy frontend di Vercel dengan setting env `NEXT_PUBLIC_API_URL`.
+- [ ] Deploy backend di VPS dengan `TUNNEL_TOKEN` Zero Trust.
 
 ---
 *Dibuat otomatis oleh agent · maks. 200 kata*

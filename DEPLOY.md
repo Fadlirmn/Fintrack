@@ -4,17 +4,20 @@ Arsitektur deployment dengan **2 repo terpisah**:
 
 | Repo | Lokasi lokal | Deploy ke |
 |------|-------------|-----------|
-| `fintrack-backend` | `~/Dokumen/FinTrack/` | **VPS** (Docker + Nginx) |
+| `fintrack-backend` | `~/Dokumen/FinTrack/` | **VPS** (Docker + Cloudflare Tunnel) |
 | `fintrack-frontend` | `~/Dokumen/FinTrack Fronted/` | **Vercel** |
 
 ```
 Browser ──→ Vercel (fintrack-frontend)
                 │  fetch API
                 ▼
-            VPS Nginx ──→ Go Backend :8080
-                              │
-                        Telegram Webhook
-                        Firebase Firestore
+      Cloudflare Tunnel (Edge)
+                │
+                ▼
+          VPS cloudflared ──→ Go Backend :8080
+                                    │
+                              Telegram Webhook
+                              Firebase Firestore
 ```
 
 ---
@@ -23,17 +26,58 @@ Browser ──→ Vercel (fintrack-frontend)
 
 ```
 ~/Dokumen/FinTrack/           ← backend repo (git init ✅, commit ✅)
-├── backend/                  ← Go source code
-├── nginx/                    ← Nginx config
-├── docker-compose.yml
-├── deploy.sh                 ← script deploy VPS
-└── vps-setup.sh
+├── backend/                  ← Go REST API & Telegram Bot
+│   ├── cmd/
+│   │   ├── api/
+│   │   │   └── main.go       ← REST API server entrypoint
+│   │   └── bot/
+│   │       └── main.go       ← Poller bot entrypoint (opsional)
+│   ├── config/
+│   │   └── config.go         ← Loader konfigurasi Go
+│   ├── configs/
+│   │   └── firebase-credentials.json ← Credentials Firebase (gitignored 🔒)
+│   ├── internal/
+│   │   ├── auth/
+│   │   │   ├── handler.go    ← Register, Login, Me, UpdateProfile
+│   │   │   ├── jwt.go        ← Token generation/validation
+│   │   │   └── middleware.go ← Auth middleware
+│   │   ├── db/
+│   │   │   └── firestore.go  ← Firestore client initializer
+│   │   ├── telegram/
+│   │   │   ├── handler.go    ← Webhook message handler & linking
+│   │   │   ├── parser.go     ← Parser pesan pengeluaran
+│   │   │   └── poller.go     ← Long polling implementation
+│   │   └── transaction/
+│   │       └── handler.go    ← CRUD transaksi & kategori, dashboard summary
+│   ├── .dockerignore
+│   ├── .env                  ← Konfigurasi env lokal (gitignored 🔒)
+│   ├── .env.example
+│   ├── .gitignore
+│   ├── Dockerfile            ← Multi-stage build Go backend
+│   ├── go.mod
+│   ├── go.sum
+│   └── railway.toml
+├── discussions/              ← Dokumentasi ringkasan diskusi
+│   └── 2026-06-11_deploy-fintrack-split/
+│       ├── changelog.md
+│       └── summary.md
+├── CHANGELOG.md              ← Riwayat versi rilis proyek
+├── DECISION_LOG.md           ← Riwayat keputusan teknis arsitektur
+├── DEPLOY.md                 ← Panduan deployment (file ini)
+├── README.md                 ← Deskripsi umum proyek
+├── deploy-tunnel.sh          ← Script deploy VPS (Cloudflare Tunnel)
+├── docker-compose.yml        ← Konfigurasi container backend & cloudflared
+└── vps-setup.sh              ← Script setup awal VPS (Docker & Firewall)
 
 ~/Dokumen/FinTrack Fronted/   ← frontend repo (git init ✅, commit ✅)
-├── src/
+├── src/                      ← Next.js source code
+│   ├── app/                  ← Page routing & view
+│   ├── components/           ← Reusable UI components
+│   └── services/             ← Client API integration (api.ts)
 ├── next.config.js
 ├── vercel.json
-└── package.json
+├── package.json
+└── .env.example
 ```
 
 ---
@@ -104,7 +148,7 @@ ssh user@IP_VPS "sudo bash /tmp/vps-setup.sh"
 exit && ssh user@IP_VPS
 ```
 
-Script menginstall: Docker, Docker Compose, UFW firewall (buka port 80, 443, 22).
+Script menginstall: Docker, Docker Compose, UFW firewall (hanya buka port 22 untuk SSH outbound).
 
 ### 3b. Clone backend repo ke VPS
 
@@ -158,21 +202,20 @@ ALLOWED_ORIGINS=https://fintrack-abc123.vercel.app,*.vercel.app,http://localhost
 
 ```bash
 cd /opt/fintrack
-./deploy.sh api.DOMAIN_KAMU.com email@kamu.com
+./deploy-tunnel.sh server.home-sumbul.my.id
 ```
 
-Script otomatis: request SSL cert → build Docker → jalankan container → register Telegram Webhook.
+Script otomatis: build Docker → jalankan container (backend + cloudflared) → register Telegram Webhook.
 
 ### 3f. Verifikasi backend berjalan
 
 ```bash
-# Health check
-curl https://api.DOMAIN_KAMU.com/health
-# Harus return: OK
+# Cek logs container backend
+docker compose logs backend
 
 # Cek Telegram webhook
 curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
-# Harus ada: "url": "https://api.DOMAIN_KAMU.com/api/v1/telegram/webhook"
+# Harus ada: "url": "https://server.home-sumbul.my.id/api/v1/telegram/webhook"
 ```
 
 ---
@@ -197,9 +240,6 @@ docker compose logs -f backend
 
 # Update setelah push kode baru ke GitHub
 git pull && docker compose up -d --build backend
-
-# Restart nginx (misal setelah update config)
-docker compose restart nginx
 
 # Stop semua
 docker compose down
@@ -239,5 +279,5 @@ docker compose up -d --build backend
 | CORS error di browser | Tambahkan URL Vercel ke `ALLOWED_ORIGINS` di `backend/.env`, lalu `docker compose restart backend` |
 | Vercel build gagal | Cek `NEXT_PUBLIC_API_URL` sudah diset di Vercel env vars |
 | Bot tidak balas | `docker compose logs backend` → cek token + webhook terdaftar |
-| SSL gagal | Pastikan DNS sudah propagate, tunggu 5-10 menit lalu coba lagi |
+| SSL / Akses gagal | Pastikan status tunnel aktif dan konfigurasi Public Hostname di dasbor Cloudflare Zero Trust sudah benar |
 | Firebase error | Cek `backend/configs/firebase-credentials.json` ada dan valid |

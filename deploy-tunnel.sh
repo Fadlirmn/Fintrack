@@ -57,9 +57,6 @@ preflight() {
 configure_domain() {
     info "Mengkonfigurasi domain: $DOMAIN"
 
-    # Ganti domain di nginx config
-    sed -i "s/server\.home-sumbul\.my\.id/$DOMAIN/g" "$PROJECT_DIR/nginx/conf.d/fintrack.conf"
-
     # Update TELEGRAM_WEBHOOK_URL di backend/.env
     sed -i "s|TELEGRAM_WEBHOOK_URL=.*|TELEGRAM_WEBHOOK_URL=https://$DOMAIN/api/v1/telegram/webhook|" "$PROJECT_DIR/backend/.env"
 
@@ -115,7 +112,7 @@ verify() {
     echo "═══════════════════════════════════════════════"
     echo "  FinTrack Cloudflare Tunnel Deployment OK!"
     echo "  Domain: https://$DOMAIN"
-    echo "  Nginx Port: 80 (Internal Docker Only)"
+    echo "  Backend Port: 8080 (Internal Docker Only)"
     echo "  UFW Port Terbuka: Hanya 22 (SSH) - Aman! 🔒"
     echo "═══════════════════════════════════════════════"
 }
