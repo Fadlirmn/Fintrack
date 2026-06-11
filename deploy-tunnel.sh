@@ -36,11 +36,6 @@ preflight() {
 
     # Check .env files
     [[ -f "$PROJECT_DIR/backend/.env" ]] || error "backend/.env tidak ada. Copy dari backend/.env.example dan isi."
-    
-    # Check TUNNEL_TOKEN di environment/sistem
-    if ! grep -q "^TUNNEL_TOKEN=" "$PROJECT_DIR/.env" 2>/dev/null && [[ -z "${TUNNEL_TOKEN:-}" ]]; then
-        warn "TUNNEL_TOKEN tidak terdeteksi di root .env atau environment VPS! Pastikan Anda menyediakannya."
-    fi
 
     # Check Firebase credentials
     [[ -f "$PROJECT_DIR/backend/configs/firebase-credentials.json" ]] || \

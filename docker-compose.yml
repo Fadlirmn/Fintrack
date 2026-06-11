@@ -14,8 +14,8 @@ services:
       dockerfile: Dockerfile
     container_name: fintrack-backend
     restart: unless-stopped
-    expose:
-      - "8080"
+    ports:
+      - "127.0.0.1:8080:8080"
     env_file:
       - ./backend/.env
     volumes:
@@ -33,21 +33,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
-
-  # ─────────────────────────────────────────────
-  #  Cloudflare Tunnel Client
-  # ─────────────────────────────────────────────
-  tunnel:
-    image: cloudflare/cloudflared:latest
-    container_name: fintrack-tunnel
-    restart: unless-stopped
-    command: tunnel --no-autoupdate run
-    environment:
-      - TUNNEL_TOKEN=${TUNNEL_TOKEN}
-    networks:
-      - fintrack-net
-    depends_on:
-      - backend
 
 networks:
   fintrack-net:
