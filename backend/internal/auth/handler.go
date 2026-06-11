@@ -1,26 +1,27 @@
 package auth
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"math/rand"
 	"net/http"
 	"strings"
 	"time"
 
-	"cloud.google.com/go/firestore"
 	"fintrack-backend/config"
 	"golang.org/x/crypto/bcrypt"
-	"google.golang.org/api/iterator"
+	"github.com/jmoiron/sqlx"
 )
 
 // AuthHandler handles requests related to registration, login, logout, and linking
 type AuthHandler struct {
 	cfg *config.Config
-	db  *firestore.Client
+	db  *sqlx.DB
 }
 
 // NewAuthHandler creates a new instance of AuthHandler
-func NewAuthHandler(cfg *config.Config, db *firestore.Client) *AuthHandler {
+func NewAuthHandler(cfg *config.Config, db *sqlx.DB) *AuthHandler {
 	return &AuthHandler{
 		cfg: cfg,
 		db:  db,
@@ -59,10 +60,13 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Check if email already registered
-	iter := h.db.Collection("users").Where("email", "==", req.Email).Documents(ctx)
-	defer iter.Stop()
-	_, err := iter.Next()
-	if err != iterator.Done {
+	var existingID string
+	err := h.db.QueryRowContext(ctx, `SELECT id FROM users WHERE email=$1`, req.Email).Scan(&existingID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		h.writeJSONError(w, "Database lookup failure", http.StatusInternalServerError)
+		return
+	}
+	if err == nil {
 		h.writeJSONError(w, "Email address is already in use", http.StatusBadRequest)
 		return
 	}
@@ -74,17 +78,13 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Write new user document
-	userRef := h.db.Collection("users").NewDoc()
-	userID := userRef.ID
-
-	_, err = userRef.Set(ctx, map[string]interface{}{
-		"email":          req.Email,
-		"password_hash":  string(hashedPassword),
-		"monthly_income": int64(10000000), // Default Rp 10.000.000
-		"wealth_goal":    int64(30),       // Default 30%
-		"created_at":     time.Now(),
-	})
+	// Insert new user
+	var userID string
+	err = h.db.QueryRowContext(ctx,
+		`INSERT INTO users (email, password_hash, monthly_income, wealth_goal)
+		 VALUES ($1, $2, $3, $4) RETURNING id`,
+		req.Email, string(hashedPassword), int64(10000000), int64(30),
+	).Scan(&userID)
 	if err != nil {
 		h.writeJSONError(w, "Failed to save user account", http.StatusInternalServerError)
 		return
@@ -124,13 +124,14 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Email = strings.TrimSpace(strings.ToLower(req.Email))
-
 	ctx := r.Context()
-	iter := h.db.Collection("users").Where("email", "==", req.Email).Documents(ctx)
-	defer iter.Stop()
 
-	doc, err := iter.Next()
-	if err == iterator.Done {
+	var userID, passwordHash string
+	err := h.db.QueryRowContext(ctx,
+		`SELECT id, password_hash FROM users WHERE email=$1`,
+		req.Email,
+	).Scan(&userID, &passwordHash)
+	if errors.Is(err, sql.ErrNoRows) {
 		h.writeJSONError(w, "Invalid email or password", http.StatusUnauthorized)
 		return
 	} else if err != nil {
@@ -138,22 +139,11 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var userData struct {
-		PasswordHash string `firestore:"password_hash"`
-	}
-	if err := doc.DataTo(&userData); err != nil {
-		h.writeJSONError(w, "Failed to read user data", http.StatusInternalServerError)
-		return
-	}
-
-	// Check password hash
-	err = bcrypt.CompareHashAndPassword([]byte(userData.PasswordHash), []byte(req.Password))
-	if err != nil {
+	// Verify password
+	if err := bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)); err != nil {
 		h.writeJSONError(w, "Invalid email or password", http.StatusUnauthorized)
 		return
 	}
-
-	userID := doc.Ref.ID
 
 	// Create JWT token
 	token, err := GenerateToken(userID, req.Email, h.cfg.JWTSecret)
@@ -201,33 +191,26 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// Ambil data user dari Firestore untuk mendapatkan parameter personalisasi keuangan
-	userDoc, err := h.db.Collection("users").Doc(userID).Get(ctx)
-	var monthlyIncome int64 = 10000000 // default
-	var wealthGoal int64 = 30          // default
-	if err == nil && userDoc.Exists() {
-		if val, err := userDoc.DataAt("monthly_income"); err == nil {
-			if intVal, ok := val.(int64); ok {
-				monthlyIncome = intVal
-			}
-		}
-		if val, err := userDoc.DataAt("wealth_goal"); err == nil {
-			if intVal, ok := val.(int64); ok {
-				wealthGoal = intVal
-			}
-		}
+	// Fetch financial profile
+	var monthlyIncome, wealthGoal int64
+	err := h.db.QueryRowContext(ctx,
+		`SELECT monthly_income, wealth_goal FROM users WHERE id=$1`, userID,
+	).Scan(&monthlyIncome, &wealthGoal)
+	if err != nil {
+		monthlyIncome = 10000000
+		wealthGoal = 30
 	}
 
-	isLinked := false
-	var telegramChatID string
+	// Check Telegram binding
+	var chatID sql.NullString
+	_ = h.db.QueryRowContext(ctx,
+		`SELECT chat_id FROM telegram_binds WHERE user_id=$1 AND is_active=TRUE LIMIT 1`, userID,
+	).Scan(&chatID)
 
-	// Check if Telegram binding exists
-	iter := h.db.Collection("telegram_binds").Where("user_id", "==", userID).Documents(ctx)
-	defer iter.Stop()
-	bindDoc, err := iter.Next()
-	if err == nil {
-		isLinked = true
-		telegramChatID = bindDoc.Ref.ID
+	isLinked := chatID.Valid
+	telegramChatID := ""
+	if chatID.Valid {
+		telegramChatID = chatID.String
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -258,11 +241,13 @@ func (h *AuthHandler) GenerateLinkCode(w http.ResponseWriter, r *http.Request) {
 	code := generateRandomCode(6)
 	expiresAt := time.Now().Add(10 * time.Minute)
 
-	_, err := h.db.Collection("verification_codes").NewDoc().Set(ctx, map[string]interface{}{
-		"code":       code,
-		"user_id":    userID,
-		"expires_at": expiresAt,
-	})
+	// Delete any existing codes for this user first, then insert fresh one
+	_, _ = h.db.ExecContext(ctx, `DELETE FROM verification_codes WHERE user_id=$1`, userID)
+
+	_, err := h.db.ExecContext(ctx,
+		`INSERT INTO verification_codes (code, user_id, expires_at) VALUES ($1, $2, $3)`,
+		code, userID, expiresAt,
+	)
 	if err != nil {
 		h.writeJSONError(w, "Could not store verification code", http.StatusInternalServerError)
 		return
@@ -303,12 +288,10 @@ func (h *AuthHandler) UpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	userRef := h.db.Collection("users").Doc(userID)
-
-	_, err := userRef.Update(ctx, []firestore.Update{
-		{Path: "monthly_income", Value: req.MonthlyIncome},
-		{Path: "wealth_goal", Value: req.WealthGoal},
-	})
+	_, err := h.db.ExecContext(ctx,
+		`UPDATE users SET monthly_income=$1, wealth_goal=$2 WHERE id=$3`,
+		req.MonthlyIncome, req.WealthGoal, userID,
+	)
 	if err != nil {
 		h.writeJSONError(w, "Failed to update financial profile", http.StatusInternalServerError)
 		return

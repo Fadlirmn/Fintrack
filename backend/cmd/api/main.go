@@ -24,17 +24,17 @@ func main() {
 	// 1. Load configuration from environment
 	cfg := config.LoadConfig()
 
-	// 2. Initialize Firestore connection
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	firestoreClient, err := db.InitFirestore(ctx, cfg.FirebaseProjectID)
+	// 2. Initialize PostgreSQL connection
+	dbConn, err := db.InitPostgres(cfg.DatabaseURL)
 	if err != nil {
-		log.Fatalf("Failed to initialize database connections: %v\n", err)
+		log.Fatalf("Failed to initialize database connection: %v\n", err)
 	}
-	defer firestoreClient.Close()
+	defer dbConn.Close()
 
-	// 3. Register HTTP Route Handlers
+	// 3. Run schema migrations (idempotent — safe on every restart)
+	db.RunMigrations(dbConn)
+
+	// 4. Register HTTP Route Handlers
 	mux := http.NewServeMux()
 
 	// Public Health Check
@@ -44,9 +44,9 @@ func main() {
 	})
 
 	// Instantiate handlers
-	authHandler := auth.NewAuthHandler(cfg, firestoreClient)
-	txHandler := transaction.NewHandler(firestoreClient)
-	webhookHandler := telegram.NewWebhookHandler(cfg, firestoreClient)
+	authHandler := auth.NewAuthHandler(cfg, dbConn)
+	txHandler := transaction.NewHandler(dbConn)
+	webhookHandler := telegram.NewWebhookHandler(cfg, dbConn)
 
 	// Telegram Webhook endpoint (Verify request header to ensure safety)
 	mux.Handle("/api/v1/telegram/webhook", webhookHandler)
@@ -79,11 +79,11 @@ func main() {
 	// Dashboard Aggregation Endpoints (Protected)
 	mux.Handle("GET /api/v1/dashboard/summary", authMiddleware(http.HandlerFunc(txHandler.GetDashboardSummary)))
 
-	// Apply CORS wrapper (whitelist dari env ALLOWED_ORIGINS)
+	// Apply CORS wrapper (whitelist from env ALLOWED_ORIGINS)
 	allowedOrigins := getAllowedOrigins()
 	mainHandler := corsMiddleware(mux, allowedOrigins)
 
-	// 4. Initialize HTTP Server
+	// 5. Initialize HTTP Server
 	serverAddr := fmt.Sprintf(":%s", cfg.Port)
 	srv := &http.Server{
 		Addr:    serverAddr,
@@ -98,11 +98,11 @@ func main() {
 		}
 	}()
 
-	// 5. Graceful shutdown handler
+	// 6. Graceful shutdown handler
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	
+
 	log.Println("Shutting down server gracefully...")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
@@ -114,20 +114,17 @@ func main() {
 	log.Println("Server stopped cleanly.")
 }
 
-// getAllowedOrigins membaca daftar origin yang diizinkan dari env var ALLOWED_ORIGINS.
-// Format: comma-separated, contoh: "https://fintrack.vercel.app,https://fintrack.kamu.id"
-// Jika kosong, fallback ke "*" (open CORS — TIDAK recommended untuk production).
+// getAllowedOrigins reads the ALLOWED_ORIGINS env var (comma-separated).
 func getAllowedOrigins() []string {
 	raw := os.Getenv("ALLOWED_ORIGINS")
 	if raw == "" {
 		log.Println("Warning: ALLOWED_ORIGINS tidak diset. CORS terbuka untuk semua origin.")
-		return nil // nil = allow all
+		return nil
 	}
 	origins := strings.Split(raw, ",")
 	result := make([]string, 0, len(origins))
 	for _, o := range origins {
 		if trimmed := strings.TrimSpace(o); trimmed != "" {
-			// Trim trailing slash to prevent CORS mismatch issues
 			trimmed = strings.TrimSuffix(trimmed, "/")
 			result = append(result, trimmed)
 		}
@@ -136,20 +133,18 @@ func getAllowedOrigins() []string {
 	return result
 }
 
-// corsMiddleware menangani CORS dengan whitelist origin.
-// Mendukung Vercel preview URLs dan custom domain.
+// corsMiddleware handles CORS with origin whitelist.
 func corsMiddleware(next http.Handler, allowedOrigins []string) http.Handler {
 	isAllowed := func(origin string) bool {
 		if len(allowedOrigins) == 0 {
-			return true // allow all jika tidak dikonfigurasi
+			return true
 		}
 		for _, allowed := range allowedOrigins {
 			if origin == allowed {
 				return true
 			}
-			// Support wildcard untuk Vercel preview: *.vercel.app
 			if strings.HasPrefix(allowed, "*.") {
-				suffix := allowed[1:] // ".vercel.app"
+				suffix := allowed[1:]
 				if strings.HasSuffix(origin, suffix) {
 					return true
 				}
@@ -165,7 +160,6 @@ func corsMiddleware(next http.Handler, allowedOrigins []string) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		} else if origin == "" {
-			// Direct API call (tidak ada Origin header) — izinkan
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 		}
 

@@ -12,8 +12,8 @@ type Config struct {
 	TelegramBotToken    string
 	TelegramWebhookURL  string
 	TelegramSecretToken string
-	FirebaseProjectID   string
-	AllowedOrigins      string // comma-separated CORS whitelist untuk Vercel
+	DatabaseURL         string // PostgreSQL DSN
+	AllowedOrigins      string // comma-separated CORS whitelist
 }
 
 // LoadConfig reads configuration values from environment variables
@@ -41,10 +41,11 @@ func LoadConfig() *Config {
 
 	webhookURL := os.Getenv("TELEGRAM_WEBHOOK_URL")
 	secretToken := os.Getenv("TELEGRAM_SECRET_TOKEN")
-	
-	firebaseProjectID := os.Getenv("FIREBASE_PROJECT_ID")
-	if firebaseProjectID == "" {
-		log.Println("Warning: FIREBASE_PROJECT_ID is not set")
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		databaseURL = "postgres://fintrack:fintrack@localhost:5432/fintrack?sslmode=disable"
+		log.Println("Warning: DATABASE_URL is not set, using default local connection")
 	}
 
 	return &Config{
@@ -54,6 +55,6 @@ func LoadConfig() *Config {
 		TelegramBotToken:    botToken,
 		TelegramWebhookURL:  webhookURL,
 		TelegramSecretToken: secretToken,
-		FirebaseProjectID:   firebaseProjectID,
+		DatabaseURL:         databaseURL,
 	}
 }

@@ -1,9 +1,31 @@
 # ============================================================
 #  FinTrack — Docker Compose (Cloudflare Tunnel Mode)
-#  Mode: Frontend → Vercel | Backend + Bot → VPS via Cloudflare
+#  Mode: Frontend → Vercel | Backend + DB → VPS via Cloudflare
 # ============================================================
 
 services:
+
+  # ─────────────────────────────────────────────
+  #  PostgreSQL Database
+  # ─────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: fintrack-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       fintrack
+      POSTGRES_USER:     fintrack
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fintrack_secret}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - fintrack-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fintrack -d fintrack"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   # ─────────────────────────────────────────────
   #  Backend: Go REST API + Telegram Webhook Handler
@@ -14,12 +36,13 @@ services:
       dockerfile: Dockerfile
     container_name: fintrack-backend
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "127.0.0.1:8080:8080"
     env_file:
       - ./backend/.env
-    volumes:
-      - ./backend/configs:/app/configs:ro
     networks:
       - fintrack-net
     logging:
@@ -32,10 +55,13 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 20s
+
+volumes:
+  pgdata:
+    driver: local
 
 networks:
   fintrack-net:
     driver: bridge
     name: fintrack-network
-

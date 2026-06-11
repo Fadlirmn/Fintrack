@@ -3,7 +3,9 @@ package telegram
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,18 +13,18 @@ import (
 	"strings"
 	"time"
 
-	"cloud.google.com/go/firestore"
 	"fintrack-backend/config"
+	"github.com/jmoiron/sqlx"
 )
 
 // BotPoller handles long polling requests to Telegram Bot API
 type BotPoller struct {
 	cfg *config.Config
-	db  *firestore.Client
+	db  *sqlx.DB
 }
 
 // NewBotPoller instantiates a new BotPoller
-func NewBotPoller(cfg *config.Config, db *firestore.Client) *BotPoller {
+func NewBotPoller(cfg *config.Config, db *sqlx.DB) *BotPoller {
 	return &BotPoller{
 		cfg: cfg,
 		db:  db,
@@ -69,7 +71,7 @@ func (p *BotPoller) Start(ctx context.Context) {
 
 func (p *BotPoller) getUpdates(client *http.Client, offset int) ([]Update, error) {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30", p.cfg.TelegramBotToken, offset)
-	
+
 	resp, err := client.Get(url)
 	if err != nil {
 		return nil, err
@@ -113,22 +115,24 @@ func (p *BotPoller) processMessage(msg *Message) {
 			return
 		}
 		verificationCode := parts[1]
-		p.handleLinking(ctx, chatIDStr, verificationCode)
+		p.handleLinking(ctx, chatID, chatIDStr, verificationCode)
 		return
 	}
 
 	// 2. Query telegram_binds to ensure account is linked
-	bindDoc, err := p.db.Collection("telegram_binds").Doc(chatIDStr).Get(ctx)
-	if err != nil {
+	var bindData struct {
+		UserID   string `db:"user_id"`
+		IsActive bool   `db:"is_active"`
+	}
+	err := p.db.QueryRowxContext(ctx,
+		`SELECT user_id, is_active FROM telegram_binds WHERE chat_id=$1`, chatIDStr,
+	).StructScan(&bindData)
+
+	if errors.Is(err, sql.ErrNoRows) {
 		p.sendTelegramReply(chatID, "⚠️ Akun Telegram Anda belum terhubung.\nSilakan kunjungi dashboard web FinTrack untuk menghubungkan akun Telegram Anda.")
 		return
 	}
-
-	var bindData struct {
-		UserID   string `firestore:"user_id"`
-		IsActive bool   `firestore:"is_active"`
-	}
-	if err := bindDoc.DataTo(&bindData); err != nil || !bindData.IsActive {
+	if err != nil || !bindData.IsActive {
 		p.sendTelegramReply(chatID, "⚠️ Terjadi kesalahan memuat data binding atau akun dinonaktifkan.")
 		return
 	}
@@ -140,20 +144,14 @@ func (p *BotPoller) processMessage(msg *Message) {
 		return
 	}
 
-	// 4. Save directly to Firestore
-	txRef := p.db.Collection("transactions").NewDoc()
-	txData := map[string]interface{}{
-		"user_id":       bindData.UserID,
-		"category_name": parsed.Category,
-		"amount":        parsed.Amount,
-		"description":   parsed.Description,
-		"source":        "telegram",
-		"created_at":    time.Now(),
-	}
-
-	_, err = txRef.Set(ctx, txData)
+	// 4. Save to PostgreSQL transactions table
+	_, err = p.db.ExecContext(ctx,
+		`INSERT INTO transactions (user_id, category_name, amount, description, source)
+		 VALUES ($1, $2, $3, $4, 'telegram')`,
+		bindData.UserID, parsed.Category, parsed.Amount, parsed.Description,
+	)
 	if err != nil {
-		log.Printf("Failed to write transaction to Firestore: %v\n", err)
+		log.Printf("Failed to write transaction to PostgreSQL: %v\n", err)
 		p.sendTelegramReply(chatID, "❌ Gagal menyimpan transaksi. Silakan coba beberapa saat lagi.")
 		return
 	}
@@ -162,61 +160,70 @@ func (p *BotPoller) processMessage(msg *Message) {
 	p.sendTelegramReply(chatID, fmt.Sprintf("✅ *Transaksi Berhasil Dicatat!*\n\n📝 Deskripsi: %s\n💰 Jumlah: *%s*\n🏷️ Kategori: *%s*", parsed.Description, formattedAmount, parsed.Category))
 }
 
-func (p *BotPoller) handleLinking(ctx context.Context, chatIDStr string, code string) {
+func (p *BotPoller) handleLinking(ctx context.Context, chatID int64, chatIDStr, code string) {
 	log.Printf("Handling link operation for chatID %s with code %s\n", chatIDStr, code)
 
-	iter := p.db.Collection("verification_codes").Where("code", "==", code).Documents(ctx)
-	defer iter.Stop()
+	var codeData struct {
+		RecordID  string    `db:"id"`
+		UserID    string    `db:"user_id"`
+		ExpiresAt time.Time `db:"expires_at"`
+	}
+	err := p.db.QueryRowxContext(ctx,
+		`SELECT id, user_id, expires_at FROM verification_codes WHERE code=$1`, code,
+	).StructScan(&codeData)
 
-	doc, err := iter.Next()
-	if err != nil {
-		p.sendTelegramReply(mustParseInt64(chatIDStr), "❌ Kode verifikasi tidak ditemukan.")
+	if errors.Is(err, sql.ErrNoRows) {
+		p.sendTelegramReply(chatID, "❌ Kode verifikasi tidak ditemukan.")
 		return
 	}
-
-	var codeData struct {
-		UserID    string    `firestore:"user_id"`
-		ExpiresAt time.Time `firestore:"expires_at"`
-	}
-	if err := doc.DataTo(&codeData); err != nil {
-		p.sendTelegramReply(mustParseInt64(chatIDStr), "❌ Gagal memuat data verifikasi.")
+	if err != nil {
+		p.sendTelegramReply(chatID, "❌ Gagal memuat data verifikasi.")
 		return
 	}
 
 	if time.Now().After(codeData.ExpiresAt) {
-		p.sendTelegramReply(mustParseInt64(chatIDStr), "❌ Kode verifikasi telah kedaluwarsa.")
+		p.sendTelegramReply(chatID, "❌ Kode verifikasi telah kedaluwarsa.")
 		return
 	}
 
-	batch := p.db.Batch()
-	
-	// Create mapping doc
-	bindRef := p.db.Collection("telegram_binds").Doc(chatIDStr)
-	batch.Set(bindRef, map[string]interface{}{
-		"user_id":    codeData.UserID,
-		"is_active":  true,
-		"created_at": time.Now(),
-	})
-
-	// Delete verification code
-	batch.Delete(doc.Ref)
-
-	err = func() error {
-		_, commitErr := batch.Commit(ctx)
-		return commitErr
-	}()
+	// Use SQL transaction to atomically bind and delete code
+	tx, err := p.db.BeginTxx(ctx, nil)
 	if err != nil {
-		log.Printf("Failed to bind account: %v\n", err)
-		p.sendTelegramReply(mustParseInt64(chatIDStr), "❌ Gagal menyimpan binding akun.")
+		p.sendTelegramReply(chatID, "❌ Gagal memulai proses penghubungan akun.")
 		return
 	}
 
-	p.sendTelegramReply(mustParseInt64(chatIDStr), "🎉 *Akun Berhasil Terhubung!*\n\nSekarang Anda dapat mencatat pengeluaran secara instan. Contoh: `Beli kopi 25000 #makanan`")
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO telegram_binds (chat_id, user_id, is_active)
+		 VALUES ($1, $2, TRUE)
+		 ON CONFLICT (chat_id) DO UPDATE SET user_id=EXCLUDED.user_id, is_active=TRUE`,
+		chatIDStr, codeData.UserID,
+	)
+	if err != nil {
+		_ = tx.Rollback()
+		log.Printf("Failed to bind account: %v\n", err)
+		p.sendTelegramReply(chatID, "❌ Gagal menyimpan binding akun.")
+		return
+	}
+
+	_, err = tx.ExecContext(ctx, `DELETE FROM verification_codes WHERE id=$1`, codeData.RecordID)
+	if err != nil {
+		_ = tx.Rollback()
+		p.sendTelegramReply(chatID, "❌ Gagal menyimpan binding akun.")
+		return
+	}
+
+	if err := tx.Commit(); err != nil {
+		p.sendTelegramReply(chatID, "❌ Gagal menghubungkan akun.")
+		return
+	}
+
+	p.sendTelegramReply(chatID, "🎉 *Akun Berhasil Terhubung!*\n\nSekarang Anda dapat mencatat pengeluaran secara instan. Contoh: `Beli kopi 25000 #makanan`")
 }
 
 func (p *BotPoller) sendTelegramReply(chatID int64, text string) {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", p.cfg.TelegramBotToken)
-	
+
 	payload := map[string]interface{}{
 		"chat_id":    chatID,
 		"text":       text,
