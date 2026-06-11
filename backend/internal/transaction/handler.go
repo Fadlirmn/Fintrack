@@ -67,7 +67,8 @@ func (h *Handler) ListTransactions(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(list)
 }
 
-// CreateTransaction saves a new transaction to the database
+// CreateTransaction saves a new transaction to the database.
+// Accepts optional "date" field (YYYY-MM-DD) to backdate the transaction.
 func (h *Handler) CreateTransaction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -80,6 +81,7 @@ func (h *Handler) CreateTransaction(w http.ResponseWriter, r *http.Request) {
 		CategoryName string `json:"category_name"`
 		Amount       int64  `json:"amount"`
 		Description  string `json:"description"`
+		Date         string `json:"date"` // optional: YYYY-MM-DD to override created_at
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeJSONError(w, "Invalid input request data", http.StatusBadRequest)
@@ -95,13 +97,21 @@ func (h *Handler) CreateTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now()
+	// Allow date override for backdating; default to now
+	createdAt := time.Now()
+	if req.Date != "" {
+		if parsed, err := time.ParseInLocation("2006-01-02", req.Date, time.Local); err == nil {
+			// Set to noon of the selected date to avoid timezone edge cases
+			createdAt = time.Date(parsed.Year(), parsed.Month(), parsed.Day(), 12, 0, 0, 0, time.Local)
+		}
+	}
+
 	var id string
 	err := h.db.QueryRowContext(r.Context(),
 		`INSERT INTO transactions (user_id, category_name, amount, description, source, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id`,
-		userID, req.CategoryName, req.Amount, req.Description, "web", now,
+		userID, req.CategoryName, req.Amount, req.Description, "web", createdAt,
 	).Scan(&id)
 	if err != nil {
 		h.writeJSONError(w, "Database saving failed", http.StatusInternalServerError)
@@ -117,7 +127,7 @@ func (h *Handler) CreateTransaction(w http.ResponseWriter, r *http.Request) {
 		"amount":        req.Amount,
 		"description":   req.Description,
 		"source":        "web",
-		"created_at":    now,
+		"created_at":    createdAt,
 	})
 }
 

@@ -14,6 +14,7 @@ import (
 	"fintrack-backend/config"
 	"fintrack-backend/internal/auth"
 	"fintrack-backend/internal/db"
+	"fintrack-backend/internal/fixedexpense"
 	"fintrack-backend/internal/telegram"
 	"fintrack-backend/internal/transaction"
 )
@@ -46,6 +47,7 @@ func main() {
 	// Instantiate handlers
 	authHandler := auth.NewAuthHandler(cfg, dbConn)
 	txHandler := transaction.NewHandler(dbConn)
+	feHandler := fixedexpense.NewHandler(dbConn)
 	webhookHandler := telegram.NewWebhookHandler(cfg, dbConn)
 
 	// Telegram Webhook endpoint (Verify request header to ensure safety)
@@ -78,6 +80,12 @@ func main() {
 
 	// Dashboard Aggregation Endpoints (Protected)
 	mux.Handle("GET /api/v1/dashboard/summary", authMiddleware(http.HandlerFunc(txHandler.GetDashboardSummary)))
+
+	// Fixed Expenses Endpoints (Protected)
+	mux.Handle("GET /api/v1/fixed-expenses", authMiddleware(http.HandlerFunc(feHandler.List)))
+	mux.Handle("POST /api/v1/fixed-expenses", authMiddleware(http.HandlerFunc(feHandler.Create)))
+	mux.Handle("PUT /api/v1/fixed-expenses/{id}", authMiddleware(http.HandlerFunc(feHandler.Update)))
+	mux.Handle("DELETE /api/v1/fixed-expenses/{id}", authMiddleware(http.HandlerFunc(feHandler.Delete)))
 
 	// Apply CORS wrapper (whitelist from env ALLOWED_ORIGINS)
 	allowedOrigins := getAllowedOrigins()

@@ -25,10 +25,7 @@ type BotPoller struct {
 
 // NewBotPoller instantiates a new BotPoller
 func NewBotPoller(cfg *config.Config, db *sqlx.DB) *BotPoller {
-	return &BotPoller{
-		cfg: cfg,
-		db:  db,
-	}
+	return &BotPoller{cfg: cfg, db: db}
 }
 
 type UpdateResponse struct {
@@ -40,9 +37,7 @@ type UpdateResponse struct {
 func (p *BotPoller) Start(ctx context.Context) {
 	log.Println("Starting Telegram Bot Poller loop...")
 	offset := 0
-	httpClient := &http.Client{
-		Timeout: 40 * time.Second, // Must be longer than Telegram's polling timeout (30s)
-	}
+	httpClient := &http.Client{Timeout: 40 * time.Second}
 
 	for {
 		select {
@@ -52,11 +47,10 @@ func (p *BotPoller) Start(ctx context.Context) {
 		default:
 			updates, err := p.getUpdates(httpClient, offset)
 			if err != nil {
-				log.Printf("Error fetching updates from Telegram: %v. Retrying in 5 seconds...\n", err)
+				log.Printf("Error fetching updates from Telegram: %v. Retrying in 5s...\n", err)
 				time.Sleep(5 * time.Second)
 				continue
 			}
-
 			for _, update := range updates {
 				if update.Message != nil && update.Message.Text != "" {
 					go p.processMessage(update.Message)
@@ -71,26 +65,21 @@ func (p *BotPoller) Start(ctx context.Context) {
 
 func (p *BotPoller) getUpdates(client *http.Client, offset int) ([]Update, error) {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30", p.cfg.TelegramBotToken, offset)
-
 	resp, err := client.Get(url)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected Telegram response status: %s", resp.Status)
 	}
-
 	var apiResp UpdateResponse
 	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
 		return nil, err
 	}
-
 	if !apiResp.Ok {
 		return nil, fmt.Errorf("telegram API returned ok=false")
 	}
-
 	return apiResp.Result, nil
 }
 
@@ -102,66 +91,75 @@ func (p *BotPoller) processMessage(msg *Message) {
 	chatIDStr := strconv.FormatInt(chatID, 10)
 	text := strings.TrimSpace(msg.Text)
 
-	// 1. Handle command /start or /link
+	// ── Commands (tanpa login) ────────────────────────────────
 	if strings.HasPrefix(text, "/start") {
-		p.sendTelegramReply(chatID, "Halo! Selamat datang di *FinTrack*.\n\nUntuk menghubungkan bot ini dengan akun dashboard Anda, ketik:\n`/link [kode_verifikasi]`")
+		p.sendReply(chatID, menuText())
 		return
 	}
-
+	if strings.HasPrefix(text, "/menu") || strings.HasPrefix(text, "/help") {
+		p.sendReply(chatID, menuText())
+		return
+	}
 	if strings.HasPrefix(text, "/link") {
 		parts := strings.Fields(text)
 		if len(parts) < 2 {
-			p.sendTelegramReply(chatID, "Format salah. Gunakan perintah:\n`/link [kode_verifikasi]`")
+			p.sendReply(chatID, "❓ Format salah.\nGunakan: `/link [kode_verifikasi]`")
 			return
 		}
-		verificationCode := parts[1]
-		p.handleLinking(ctx, chatID, chatIDStr, verificationCode)
+		p.handleLinking(ctx, chatID, chatIDStr, parts[1])
 		return
 	}
 
-	// 2. Query telegram_binds to ensure account is linked
-	var bindData struct {
-		UserID   string `db:"user_id"`
-		IsActive bool   `db:"is_active"`
-	}
+	// ── Commands yang butuh akun terhubung ────────────────────
+	var b bindResult
 	err := p.db.QueryRowxContext(ctx,
 		`SELECT user_id, is_active FROM telegram_binds WHERE chat_id=$1`, chatIDStr,
-	).StructScan(&bindData)
+	).StructScan(&b)
 
-	if errors.Is(err, sql.ErrNoRows) {
-		p.sendTelegramReply(chatID, "⚠️ Akun Telegram Anda belum terhubung.\nSilakan kunjungi dashboard web FinTrack untuk menghubungkan akun Telegram Anda.")
+	if errors.Is(err, sql.ErrNoRows) || !b.IsActive {
+		p.sendReply(chatID, "⚠️ Akun Telegram Anda belum terhubung.\n\nBuka dashboard FinTrack → Profil → *Hubungkan Telegram*, lalu kirim:\n`/link [kode]`")
 		return
 	}
-	if err != nil || !bindData.IsActive {
-		p.sendTelegramReply(chatID, "⚠️ Terjadi kesalahan memuat data binding atau akun dinonaktifkan.")
+	if err != nil {
+		p.sendReply(chatID, "⚠️ Terjadi kesalahan sistem. Coba lagi nanti.")
 		return
 	}
 
-	// 3. Parse expense format
+	if strings.HasPrefix(text, "/saldo") {
+		p.sendReply(chatID, getSpendableBalance(ctx, p.db, b.UserID))
+		return
+	}
+	if strings.HasPrefix(text, "/summary") || strings.HasPrefix(text, "/rekap") {
+		p.sendReply(chatID, getSpendingSummary(ctx, p.db, b.UserID))
+		return
+	}
+
+	// ── Catat pengeluaran ─────────────────────────────────────
 	parsed, err := ParseMessage(text)
 	if err != nil {
-		p.sendTelegramReply(chatID, fmt.Sprintf("⚠️ %v", err))
+		p.sendReply(chatID, fmt.Sprintf("⚠️ %v\n\nFormat: `Beli kopi 25000 #makanan`\nKetik /menu untuk panduan.", err))
 		return
 	}
 
-	// 4. Save to PostgreSQL transactions table
 	_, err = p.db.ExecContext(ctx,
 		`INSERT INTO transactions (user_id, category_name, amount, description, source)
 		 VALUES ($1, $2, $3, $4, 'telegram')`,
-		bindData.UserID, parsed.Category, parsed.Amount, parsed.Description,
+		b.UserID, parsed.Category, parsed.Amount, parsed.Description,
 	)
 	if err != nil {
-		log.Printf("Failed to write transaction to PostgreSQL: %v\n", err)
-		p.sendTelegramReply(chatID, "❌ Gagal menyimpan transaksi. Silakan coba beberapa saat lagi.")
+		log.Printf("Failed to write transaction: %v\n", err)
+		p.sendReply(chatID, "❌ Gagal menyimpan transaksi. Coba beberapa saat lagi.")
 		return
 	}
 
-	formattedAmount := formatRupiah(parsed.Amount)
-	p.sendTelegramReply(chatID, fmt.Sprintf("✅ *Transaksi Berhasil Dicatat!*\n\n📝 Deskripsi: %s\n💰 Jumlah: *%s*\n🏷️ Kategori: *%s*", parsed.Description, formattedAmount, parsed.Category))
+	p.sendReply(chatID, fmt.Sprintf(
+		"✅ *Transaksi Dicatat!*\n\n📝 %s\n💰 *%s*\n🏷️ %s",
+		parsed.Description, formatRupiah(parsed.Amount), parsed.Category,
+	))
 }
 
 func (p *BotPoller) handleLinking(ctx context.Context, chatID int64, chatIDStr, code string) {
-	log.Printf("Handling link operation for chatID %s with code %s\n", chatIDStr, code)
+	log.Printf("Handling link for chatID %s with code %s\n", chatIDStr, code)
 
 	var codeData struct {
 		RecordID  string    `db:"id"`
@@ -173,23 +171,21 @@ func (p *BotPoller) handleLinking(ctx context.Context, chatID int64, chatIDStr, 
 	).StructScan(&codeData)
 
 	if errors.Is(err, sql.ErrNoRows) {
-		p.sendTelegramReply(chatID, "❌ Kode verifikasi tidak ditemukan.")
+		p.sendReply(chatID, "❌ Kode verifikasi tidak ditemukan.")
 		return
 	}
 	if err != nil {
-		p.sendTelegramReply(chatID, "❌ Gagal memuat data verifikasi.")
+		p.sendReply(chatID, "❌ Gagal memuat data verifikasi.")
 		return
 	}
-
 	if time.Now().After(codeData.ExpiresAt) {
-		p.sendTelegramReply(chatID, "❌ Kode verifikasi telah kedaluwarsa.")
+		p.sendReply(chatID, "❌ Kode verifikasi telah kedaluwarsa. Generate kode baru di dashboard.")
 		return
 	}
 
-	// Use SQL transaction to atomically bind and delete code
 	tx, err := p.db.BeginTxx(ctx, nil)
 	if err != nil {
-		p.sendTelegramReply(chatID, "❌ Gagal memulai proses penghubungan akun.")
+		p.sendReply(chatID, "❌ Gagal memulai proses penghubungan.")
 		return
 	}
 
@@ -201,49 +197,41 @@ func (p *BotPoller) handleLinking(ctx context.Context, chatID int64, chatIDStr, 
 	)
 	if err != nil {
 		_ = tx.Rollback()
-		log.Printf("Failed to bind account: %v\n", err)
-		p.sendTelegramReply(chatID, "❌ Gagal menyimpan binding akun.")
+		p.sendReply(chatID, "❌ Gagal menyimpan binding akun.")
 		return
 	}
 
 	_, err = tx.ExecContext(ctx, `DELETE FROM verification_codes WHERE id=$1`, codeData.RecordID)
 	if err != nil {
 		_ = tx.Rollback()
-		p.sendTelegramReply(chatID, "❌ Gagal menyimpan binding akun.")
+		p.sendReply(chatID, "❌ Gagal menghubungkan akun.")
 		return
 	}
 
 	if err := tx.Commit(); err != nil {
-		p.sendTelegramReply(chatID, "❌ Gagal menghubungkan akun.")
+		p.sendReply(chatID, "❌ Gagal menghubungkan akun.")
 		return
 	}
 
-	p.sendTelegramReply(chatID, "🎉 *Akun Berhasil Terhubung!*\n\nSekarang Anda dapat mencatat pengeluaran secara instan. Contoh: `Beli kopi 25000 #makanan`")
+	p.sendReply(chatID, "🎉 *Akun Berhasil Terhubung!*\n\n"+menuText())
 }
 
-func (p *BotPoller) sendTelegramReply(chatID int64, text string) {
+func (p *BotPoller) sendReply(chatID int64, text string) {
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", p.cfg.TelegramBotToken)
-
 	payload := map[string]interface{}{
 		"chat_id":    chatID,
 		"text":       text,
 		"parse_mode": "Markdown",
 	}
-
 	body, err := json.Marshal(payload)
 	if err != nil {
-		log.Printf("Failed to marshal telegram payload: %v\n", err)
+		log.Printf("Failed to marshal telegram message: %v\n", err)
 		return
 	}
-
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
 	if err != nil {
-		log.Printf("Failed to make request to Telegram API: %v\n", err)
+		log.Printf("Failed to send telegram message: %v\n", err)
 		return
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("Telegram API returned non-OK status: %s\n", resp.Status)
-	}
 }
