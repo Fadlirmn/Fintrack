@@ -202,7 +202,7 @@ ALLOWED_ORIGINS=https://fintrack-abc123.vercel.app,*.vercel.app,http://localhost
 
 ```bash
 cd /opt/fintrack
-./deploy-tunnel.sh server.home-sumbul.my.id
+./deploy-tunnel.sh fintrack.home-sumbul.my.id
 ```
 
 Script otomatis: build Docker → jalankan container (backend + cloudflared) → register Telegram Webhook.
@@ -215,7 +215,7 @@ docker compose logs backend
 
 # Cek Telegram webhook
 curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
-# Harus ada: "url": "https://server.home-sumbul.my.id/api/v1/telegram/webhook"
+# Harus ada: "url": "https://fintrack.home-sumbul.my.id/api/v1/telegram/webhook"
 ```
 
 ---

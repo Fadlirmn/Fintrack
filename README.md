@@ -30,7 +30,7 @@ sudo bash vps-setup.sh
 # 2. Upload credentials & isi .env di folder backend/
 
 # 3. Jalankan deploy script
-./deploy-tunnel.sh server.home-sumbul.my.id
+./deploy-tunnel.sh fintrack.home-sumbul.my.id
 ```
 
 ---

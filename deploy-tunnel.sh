@@ -3,7 +3,7 @@
 #  FinTrack VPS Deploy Script (Cloudflare Tunnel Mode)
 #  Usage:
 #    chmod +x deploy-tunnel.sh
-#    ./deploy-tunnel.sh server.home-sumbul.my.id
+#    ./deploy-tunnel.sh fintrack.home-sumbul.my.id
 # ============================================================
 
 set -euo pipefail
@@ -36,6 +36,12 @@ preflight() {
 
     # Check .env files
     [[ -f "$PROJECT_DIR/backend/.env" ]] || error "backend/.env tidak ada. Copy dari backend/.env.example dan isi."
+    
+    # Check TUNNEL_TOKEN di environment/sistem
+    if ! grep -q "^TUNNEL_TOKEN=" "$PROJECT_DIR/.env" 2>/dev/null && [[ -z "${TUNNEL_TOKEN:-}" ]]; then
+        warn "TUNNEL_TOKEN tidak terdeteksi di root .env atau environment VPS! Pastikan Anda menyediakannya."
+    fi
+
     # Check Firebase credentials
     [[ -f "$PROJECT_DIR/backend/configs/firebase-credentials.json" ]] || \
         warn "backend/configs/firebase-credentials.json tidak ditemukan! Backend akan gagal konek."
@@ -106,7 +112,7 @@ verify() {
     echo "═══════════════════════════════════════════════"
     echo "  FinTrack Cloudflare Tunnel Deployment OK!"
     echo "  Domain: https://$DOMAIN"
-    echo "  Backend Port: 127.0.0.1:8080 (Mapped for Host Cloudflared)"
+    echo "  Backend Port: 8080 (Internal Docker Only)"
     echo "  UFW Port Terbuka: Hanya 22 (SSH) - Aman! 🔒"
     echo "═══════════════════════════════════════════════"
 }
