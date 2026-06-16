@@ -9,17 +9,19 @@ import (
 	"time"
 
 	"fintrack-backend/config"
-	"github.com/jmoiron/sqlx"
+	"fintrack-backend/internal/gateway"
 )
 
-// BotPoller handles long polling from Telegram Bot API
+// BotPoller handles long polling from Telegram Bot API.
+// It no longer holds a DB connection — all data operations go through GatewayRouter.
 type BotPoller struct {
-	cfg *config.Config
-	db  *sqlx.DB
+	cfg    *config.Config
+	router *gateway.GatewayRouter
 }
 
-func NewBotPoller(cfg *config.Config, db *sqlx.DB) *BotPoller {
-	return &BotPoller{cfg: cfg, db: db}
+// NewBotPoller creates a new poller that routes updates through the gateway.
+func NewBotPoller(cfg *config.Config, router *gateway.GatewayRouter) *BotPoller {
+	return &BotPoller{cfg: cfg, router: router}
 }
 
 type UpdateResponse struct {
@@ -32,11 +34,14 @@ type UpdateResponse struct {
 func (p *BotPoller) Start(ctx context.Context) {
 	log.Println("[Poller] Starting Telegram Bot Poller...")
 
-	// Daftarkan perintah bot ke Telegram (muncul di menu "/" Telegram)
+	// Register bot command list with Telegram
 	SetMyCommands(p.cfg.TelegramBotToken)
 
 	offset := 0
 	client := &http.Client{Timeout: 40 * time.Second}
+
+	// Build a handler that shares our router
+	handler := &WebhookHandler{cfg: p.cfg, router: p.router}
 
 	for {
 		select {
@@ -51,7 +56,7 @@ func (p *BotPoller) Start(ctx context.Context) {
 				continue
 			}
 			for _, update := range updates {
-				go processUpdate(p.cfg.TelegramBotToken, p.db, update)
+				go handler.processUpdate(update)
 				if update.UpdateID >= offset {
 					offset = update.UpdateID + 1
 				}
@@ -62,7 +67,7 @@ func (p *BotPoller) Start(ctx context.Context) {
 
 func (p *BotPoller) getUpdates(client *http.Client, offset int) ([]Update, error) {
 	url := fmt.Sprintf(
-		"https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30&allowed_updates=[\"message\",\"callback_query\"]",
+		`https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=30&allowed_updates=["message","callback_query"]`,
 		p.cfg.TelegramBotToken, offset,
 	)
 	resp, err := client.Get(url)

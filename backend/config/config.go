@@ -14,6 +14,11 @@ type Config struct {
 	TelegramSecretToken string
 	DatabaseURL         string // PostgreSQL DSN
 	AllowedOrigins      string // comma-separated CORS whitelist
+
+	// Inter-service communication
+	GatewayAPIKey    string // API key protecting /internal/v1/* endpoints
+	HomeServerURL    string // URL of the home-server service
+	HomeServerAPIKey string // API key for calling home-server
 }
 
 // LoadConfig reads configuration values from environment variables
@@ -48,6 +53,16 @@ func LoadConfig() *Config {
 		log.Println("Warning: DATABASE_URL is not set, using default local connection")
 	}
 
+	gatewayAPIKey := os.Getenv("GATEWAY_API_KEY")
+	if gatewayAPIKey == "" {
+		log.Println("Warning: GATEWAY_API_KEY is not set — internal endpoints are unprotected!")
+	}
+
+	homeServerURL := os.Getenv("HOME_SERVER_URL")
+	if homeServerURL == "" {
+		homeServerURL = "http://localhost:8090"
+	}
+
 	return &Config{
 		Port:                port,
 		Env:                 env,
@@ -56,5 +71,9 @@ func LoadConfig() *Config {
 		TelegramWebhookURL:  webhookURL,
 		TelegramSecretToken: secretToken,
 		DatabaseURL:         databaseURL,
+		AllowedOrigins:      os.Getenv("ALLOWED_ORIGINS"),
+		GatewayAPIKey:       gatewayAPIKey,
+		HomeServerURL:       homeServerURL,
+		HomeServerAPIKey:    os.Getenv("HOME_SERVER_API_KEY"),
 	}
 }

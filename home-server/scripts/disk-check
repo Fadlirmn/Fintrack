@@ -1,0 +1,1 @@
+#!/bin/bash\n# Example: check disk usage\ndf -h

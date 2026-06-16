@@ -15,7 +15,7 @@ import (
 	"fintrack-backend/internal/auth"
 	"fintrack-backend/internal/db"
 	"fintrack-backend/internal/fixedexpense"
-	"fintrack-backend/internal/telegram"
+	"fintrack-backend/internal/middleware"
 	"fintrack-backend/internal/transaction"
 )
 
@@ -41,51 +41,59 @@ func main() {
 	// Public Health Check
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("OK"))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// Instantiate handlers
+	// ── Instantiate Handlers ──────────────────────────────────────────────
 	authHandler := auth.NewAuthHandler(cfg, dbConn)
 	txHandler := transaction.NewHandler(dbConn)
 	feHandler := fixedexpense.NewHandler(dbConn)
-	webhookHandler := telegram.NewWebhookHandler(cfg, dbConn)
 
-	// Telegram Webhook endpoint (Verify request header to ensure safety)
-	mux.Handle("/api/v1/telegram/webhook", webhookHandler)
+	// Internal handler — for bot-gateway inter-service calls (API-key protected)
+	internalTxHandler := transaction.NewInternalHandler(txHandler)
 
-	// Auth Endpoints (Public)
+	// ── Auth Middleware ───────────────────────────────────────────────────
+	authMiddleware := auth.AuthMiddleware(cfg)
+	// API-key middleware for internal routes (called by bot-gateway)
+	apiKeyMiddleware := middleware.APIKeyMiddleware(cfg.GatewayAPIKey)
+
+	// ── Public Auth Endpoints ─────────────────────────────────────────────
 	mux.HandleFunc("POST /api/v1/auth/register", authHandler.Register)
 	mux.HandleFunc("POST /api/v1/auth/login", authHandler.Login)
 	mux.HandleFunc("POST /api/v1/auth/logout", authHandler.Logout)
 
-	// Auth Middleware Setup
-	authMiddleware := auth.AuthMiddleware(cfg)
-
-	// Auth Endpoints (Protected)
+	// ── Protected Auth Endpoints ──────────────────────────────────────────
 	mux.Handle("GET /api/v1/auth/me", authMiddleware(http.HandlerFunc(authHandler.Me)))
 	mux.Handle("PUT /api/v1/auth/profile", authMiddleware(http.HandlerFunc(authHandler.UpdateProfile)))
 	mux.Handle("POST /api/v1/telegram/link-code", authMiddleware(http.HandlerFunc(authHandler.GenerateLinkCode)))
 
-	// Transaction Endpoints (Protected)
+	// ── Transaction Endpoints (JWT Protected) ─────────────────────────────
 	mux.Handle("GET /api/v1/transactions", authMiddleware(http.HandlerFunc(txHandler.ListTransactions)))
 	mux.Handle("POST /api/v1/transactions", authMiddleware(http.HandlerFunc(txHandler.CreateTransaction)))
 	mux.Handle("PUT /api/v1/transactions/{id}", authMiddleware(http.HandlerFunc(txHandler.UpdateTransaction)))
 	mux.Handle("DELETE /api/v1/transactions/{id}", authMiddleware(http.HandlerFunc(txHandler.DeleteTransaction)))
 
-	// Category Endpoints (Protected)
+	// ── Category Endpoints (JWT Protected) ───────────────────────────────
 	mux.Handle("GET /api/v1/categories", authMiddleware(http.HandlerFunc(txHandler.ListCategories)))
 	mux.Handle("POST /api/v1/categories", authMiddleware(http.HandlerFunc(txHandler.CreateCategory)))
 	mux.Handle("PUT /api/v1/categories/{id}", authMiddleware(http.HandlerFunc(txHandler.UpdateCategory)))
 	mux.Handle("DELETE /api/v1/categories/{id}", authMiddleware(http.HandlerFunc(txHandler.DeleteCategory)))
 
-	// Dashboard Aggregation Endpoints (Protected)
+	// ── Dashboard (JWT Protected) ─────────────────────────────────────────
 	mux.Handle("GET /api/v1/dashboard/summary", authMiddleware(http.HandlerFunc(txHandler.GetDashboardSummary)))
 
-	// Fixed Expenses Endpoints (Protected)
+	// ── Fixed Expenses (JWT Protected) ────────────────────────────────────
 	mux.Handle("GET /api/v1/fixed-expenses", authMiddleware(http.HandlerFunc(feHandler.List)))
 	mux.Handle("POST /api/v1/fixed-expenses", authMiddleware(http.HandlerFunc(feHandler.Create)))
 	mux.Handle("PUT /api/v1/fixed-expenses/{id}", authMiddleware(http.HandlerFunc(feHandler.Update)))
 	mux.Handle("DELETE /api/v1/fixed-expenses/{id}", authMiddleware(http.HandlerFunc(feHandler.Delete)))
+
+	// ── Internal Routes (API-key Protected) — used by bot-gateway ─────────
+	mux.Handle("GET /internal/v1/binding", apiKeyMiddleware(http.HandlerFunc(internalTxHandler.GetBinding)))
+	mux.Handle("POST /internal/v1/link", apiKeyMiddleware(http.HandlerFunc(internalTxHandler.LinkAccount)))
+	mux.Handle("GET /internal/v1/balance", apiKeyMiddleware(http.HandlerFunc(internalTxHandler.GetBalance)))
+	mux.Handle("GET /internal/v1/summary", apiKeyMiddleware(http.HandlerFunc(internalTxHandler.GetSummary)))
+	mux.Handle("POST /internal/v1/transactions", apiKeyMiddleware(http.HandlerFunc(internalTxHandler.SaveTransaction)))
 
 	// Apply CORS wrapper (whitelist from env ALLOWED_ORIGINS)
 	allowedOrigins := getAllowedOrigins()

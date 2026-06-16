@@ -1,48 +1,61 @@
 # ============================================================
-# Stage 1: Builder — compile Go binary
+# Backend Dockerfile — Multi-stage, Multi-binary
+# Produces two targets:
+#   api → fintrack REST API server (cmd/api)
+#   bot → bot gateway / long-polling (cmd/bot)
 # ============================================================
+
 FROM golang:1.25-alpine AS builder
 
-# Install git (needed for go mod download with private repos)
 RUN apk add --no-cache git ca-certificates tzdata
 
 WORKDIR /app
 
-# Copy dependency manifests first (layer caching optimization)
+# Cache dependency layer
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy all source code
+# Copy all source
 COPY . .
 
-# Build the API binary — statically linked, no CGO
+# Build API binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags="-w -s" \
     -o /app/api \
     ./cmd/api/main.go
 
-# ============================================================
-# Stage 2: Runner — minimal production image (~15MB)
-# ============================================================
-FROM alpine:3.19
+# Build Bot binary
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-w -s" \
+    -o /app/bot \
+    ./cmd/bot/main.go
 
-# Security: run as non-root user
+# ── API Runner ────────────────────────────────────────────
+FROM alpine:3.19 AS api
+
 RUN addgroup -S fintrack && adduser -S fintrack -G fintrack
-
-# Required for HTTPS and timezone
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk add --no-cache ca-certificates tzdata wget
 
 WORKDIR /app
-
-# Copy compiled binary from builder stage
 COPY --from=builder /app/api .
-# Use non-root user
 USER fintrack
 
 EXPOSE 8080
 
-# Health check endpoint
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD wget -qO- http://localhost:8080/health || exit 1
 
 CMD ["./api"]
+
+# ── Bot Gateway Runner ─────────────────────────────────────
+FROM alpine:3.19 AS bot
+
+RUN addgroup -S fintrack && adduser -S fintrack -G fintrack
+RUN apk add --no-cache ca-certificates tzdata
+
+WORKDIR /app
+COPY --from=builder /app/bot .
+USER fintrack
+
+# Bot gateway doesn't expose a port — it connects outbound only
+CMD ["./bot"]

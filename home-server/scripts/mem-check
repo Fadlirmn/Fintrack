@@ -1,0 +1,1 @@
+#!/bin/bash\n# Example: check memory usage\nfree -m
