@@ -1,0 +1,114 @@
+# ============================================================
+#  FinTrack Services — External Services Docker Compose
+#  Semua service di sini berbagi jaringan dengan stack utama
+#  via external network: fintrack-network
+#
+#  Usage:
+#    docker compose -f services/docker-compose.yml up -d
+#
+#  Tambah service baru: copy salah satu blok di bawah,
+#  connect ke jaringan fintrack-network, dan daftarkan
+#  URL-nya di backend/.env sebagai <SERVICE>_URL
+# ============================================================
+
+services:
+
+  # ─────────────────────────────────────────────
+  #  n8n — Workflow Automation
+  #  Akses UI: http://localhost:5678
+  #  Bot commands: /n8n list | /n8n run <workflow>
+  # ─────────────────────────────────────────────
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: fintrack-n8n
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      # Basic auth untuk UI (ganti sebelum production)
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER:   ${N8N_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD:-changeme}
+      # Webhook base URL (sesuaikan dengan domain/tunnel kamu)
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5678}
+      # API key untuk akses programmatic dari bot-gateway
+      N8N_API_KEY: ${N8N_API_KEY}
+      # Timezone
+      GENERIC_TIMEZONE: Asia/Jakarta
+      TZ: Asia/Jakarta
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - fintrack-network  # shared dengan stack utama
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:5678/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ─────────────────────────────────────────────
+  #  Portainer — Docker Management UI (opsional)
+  #  Akses UI: http://localhost:9000
+  # ─────────────────────────────────────────────
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: fintrack-portainer
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9000:9000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - fintrack-network
+    profiles:
+      - monitoring  # Jalankan dengan: docker compose --profile monitoring up -d
+
+  # ─────────────────────────────────────────────
+  #  Uptime Kuma — Service Monitor (opsional)
+  #  Akses UI: http://localhost:3001
+  # ─────────────────────────────────────────────
+  uptime-kuma:
+    image: louislam/uptime-kuma:latest
+    container_name: fintrack-uptime-kuma
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3001"
+    volumes:
+      - uptime_data:/app/data
+    networks:
+      - fintrack-network
+    profiles:
+      - monitoring
+
+  # ─────────────────────────────────────────────
+  #  Template: Tambah service baru di sini
+  #  Copy blok ini dan sesuaikan
+  # ─────────────────────────────────────────────
+  # my-new-service:
+  #   image: myimage:latest
+  #   container_name: fintrack-myservice
+  #   restart: unless-stopped
+  #   ports:
+  #     - "127.0.0.1:<host_port>:<container_port>"
+  #   environment:
+  #     MY_ENV: ${MY_ENV}
+  #   volumes:
+  #     - myservice_data:/data
+  #   networks:
+  #     - fintrack-network  # ← wajib untuk akses dari bot-gateway
+
+volumes:
+  n8n_data:
+    driver: local
+  portainer_data:
+    driver: local
+  uptime_data:
+    driver: local
+
+networks:
+  fintrack-network:
+    # external: true → pakai network yang sudah dibuat oleh docker-compose.yml utama
+    external: true
+    name: fintrack-network

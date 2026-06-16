@@ -143,6 +143,13 @@ func (h *WebhookHandler) handleCallbackQuery(ctx context.Context, cq *CallbackQu
 
 	case "btn_server_devices":
 		editMessage(token, chatID, msgID, h.router.ServerDevices(ctx), serverMenuKeyboard())
+
+	// ── n8n callbacks ─────────────────────────────────────────────────────
+	case "btn_n8n_menu":
+		editMessage(token, chatID, msgID, n8nMenuText(), n8nMenuKeyboard())
+
+	case "btn_n8n_list":
+		editMessage(token, chatID, msgID, h.router.N8NListWorkflows(ctx), n8nMenuKeyboard())
 	}
 }
 
@@ -178,7 +185,7 @@ func (h *WebhookHandler) handleMessage(ctx context.Context, msg *Message) {
 		sendWithKeyboard(token, chatID, reply, mainMenuKeyboard(isLinked))
 		return
 
-	// ── Server commands (no FinTrack account needed) ──────────────────
+	// ── Server commands ───────────────────────────────────────────────────
 	case strings.HasPrefix(text, "/server"):
 		parts := strings.Fields(text)
 		subcmd := ""
@@ -219,6 +226,37 @@ func (h *WebhookHandler) handleMessage(ctx context.Context, msg *Message) {
 			return
 		}
 		sendReply(token, chatID, h.router.RunScript(ctx, parts[1]))
+		return
+
+	// ── n8n commands ──────────────────────────────────────────────────────
+	case strings.HasPrefix(text, "/n8n"):
+		parts := strings.Fields(text)
+		subcmd := ""
+		if len(parts) > 1 {
+			subcmd = parts[1]
+		}
+		switch subcmd {
+		case "list":
+			sendReply(token, chatID, h.router.N8NListWorkflows(ctx))
+		case "run":
+			if len(parts) < 3 {
+				sendReply(token, chatID, "❓ Format: `/n8n run <webhook-path>`\n\nContoh: `/n8n run my-workflow`")
+				return
+			}
+			webhookPath := parts[2]
+			// Optional: sisa parts sebagai simple payload
+			var payload map[string]interface{}
+			if len(parts) > 3 {
+				payload = map[string]interface{}{
+					"args": strings.Join(parts[3:], " "),
+					"chat_id": chatIDStr,
+					"user":    name,
+				}
+			}
+			sendReply(token, chatID, h.router.N8NTrigger(ctx, webhookPath, payload))
+		default:
+			sendWithKeyboard(token, chatID, n8nMenuText(), n8nMenuKeyboard())
+		}
 		return
 	}
 
@@ -262,6 +300,7 @@ func mainMenuKeyboard(isLinked bool) map[string]interface{} {
 		},
 		{
 			{"text": "🖥️ Server", "callback_data": "btn_server_status"},
+			{"text": "🔁 n8n", "callback_data": "btn_n8n_menu"},
 		},
 	}
 	if !isLinked {
@@ -285,6 +324,28 @@ func serverMenuKeyboard() map[string]interface{} {
 			},
 		},
 	}
+}
+
+func n8nMenuKeyboard() map[string]interface{} {
+	return map[string]interface{}{
+		"inline_keyboard": [][]map[string]string{
+			{
+				{"text": "📋 List Workflows", "callback_data": "btn_n8n_list"},
+			},
+			{
+				{"text": "🏠 Menu Utama", "callback_data": "btn_menu"},
+			},
+		},
+	}
+}
+
+func n8nMenuText() string {
+	return "🔁 *n8n Automation*\n━━━━━━━━━━━━━━━━\n" +
+		"Kelola dan trigger workflow otomatisasi kamu.\n\n" +
+		"*Commands:*\n" +
+		"`/n8n list` — Daftar semua workflow\n" +
+		"`/n8n run <webhook-path>` — Trigger workflow\n\n" +
+		"_Webhook path diset di node Webhook n8n kamu._"
 }
 
 func afterSaveKeyboard() map[string]interface{} {
@@ -413,9 +474,10 @@ func SetMyCommands(token string) {
 			{"command": "saldo", "description": "Lihat saldo yang bisa dibelanjakan"},
 			{"command": "summary", "description": "Rekap pengeluaran bulan ini"},
 			{"command": "link", "description": "Hubungkan akun: /link [kode]"},
-			{"command": "server", "description": "Kontrol home server: /server status|resources|devices"},
+			{"command": "server", "description": "Home server: /server status|resources|devices"},
 			{"command": "pc", "description": "Kontrol PC: /pc sleep|shutdown|reboot"},
 			{"command": "run", "description": "Jalankan script: /run [nama]"},
+			{"command": "n8n", "description": "n8n automation: /n8n list | /n8n run [webhook]"},
 			{"command": "help", "description": "Panduan format pencatatan"},
 		},
 	})

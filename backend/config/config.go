@@ -19,6 +19,8 @@ type Config struct {
 	GatewayAPIKey    string // API key protecting /internal/v1/* endpoints
 	HomeServerURL    string // URL of the home-server service
 	HomeServerAPIKey string // API key for calling home-server
+	N8NURL           string // URL of the n8n instance (e.g. http://n8n:5678)
+	N8NAPIKey        string // n8n API key (Settings → API → Create API Key)
 }
 
 // LoadConfig reads configuration values from environment variables
@@ -75,5 +77,7 @@ func LoadConfig() *Config {
 		GatewayAPIKey:       gatewayAPIKey,
 		HomeServerURL:       homeServerURL,
 		HomeServerAPIKey:    os.Getenv("HOME_SERVER_API_KEY"),
+		N8NURL:              os.Getenv("N8N_URL"),
+		N8NAPIKey:           os.Getenv("N8N_API_KEY"),
 	}
 }

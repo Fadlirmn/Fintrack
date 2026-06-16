@@ -82,6 +82,9 @@ services:
       GATEWAY_API_KEY:      ${GATEWAY_API_KEY}
       HOME_SERVER_URL:      http://home-server:8090
       HOME_SERVER_API_KEY:  ${HOME_SERVER_API_KEY}
+      # n8n — optional, kosongkan untuk disable
+      N8N_URL:              ${N8N_URL:-http://n8n:5678}
+      N8N_API_KEY:          ${N8N_API_KEY:-}
     networks:
       - fintrack-net
     logging:
@@ -134,3 +137,5 @@ networks:
   fintrack-net:
     driver: bridge
     name: fintrack-network
+    # attachable: true agar service dari docker-compose lain (services/) bisa join
+    attachable: true

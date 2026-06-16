@@ -7,6 +7,7 @@ import (
 
 	fintrackClient "fintrack-backend/internal/gateway/fintrack"
 	homeClient "fintrack-backend/internal/gateway/home"
+	n8nClient "fintrack-backend/internal/gateway/n8n"
 )
 
 // GatewayRouter dispatches Telegram commands to the appropriate service client.
@@ -14,11 +15,12 @@ import (
 type GatewayRouter struct {
 	fintrack *fintrackClient.Client
 	home     *homeClient.Client
+	n8n      *n8nClient.Client
 }
 
-// NewGatewayRouter wires together both service clients.
-func NewGatewayRouter(ft *fintrackClient.Client, h *homeClient.Client) *GatewayRouter {
-	return &GatewayRouter{fintrack: ft, home: h}
+// NewGatewayRouter wires together all service clients.
+func NewGatewayRouter(ft *fintrackClient.Client, h *homeClient.Client, n8n *n8nClient.Client) *GatewayRouter {
+	return &GatewayRouter{fintrack: ft, home: h, n8n: n8n}
 }
 
 // ── Binding / Linking ─────────────────────────────────────────────────────────
@@ -217,6 +219,54 @@ func (r *GatewayRouter) RunScript(ctx context.Context, scriptName string) string
 		output = output[:500] + "\n...(truncated)"
 	}
 	return fmt.Sprintf("✅ *Script '%s' selesai:*\n```\n%s\n```", scriptName, output)
+}
+
+// ── n8n Commands ──────────────────────────────────────────────────────────────
+
+// N8NListWorkflows lists all n8n workflows.
+func (r *GatewayRouter) N8NListWorkflows(ctx context.Context) string {
+	if !r.n8n.IsEnabled() {
+		return "⚠️ n8n tidak dikonfigurasi."
+	}
+	workflows, err := r.n8n.ListWorkflows(ctx)
+	if err != nil {
+		return fmt.Sprintf("❌ Gagal ambil workflow n8n: %v", err)
+	}
+	if len(workflows) == 0 {
+		return "📋 Belum ada workflow di n8n."
+	}
+
+	var sb strings.Builder
+	sb.WriteString("🔁 *n8n Workflows*\n━━━━━━━━━━━━━━━━\n")
+	for _, wf := range workflows {
+		status := "⏸️"
+		if wf.Active {
+			status = "▶️"
+		}
+		sb.WriteString(fmt.Sprintf("%s `%s` — %s\n", status, wf.ID, wf.Name))
+	}
+	sb.WriteString("\n_Gunakan_ `/n8n run <webhook-path>` _untuk trigger workflow_")
+	return sb.String()
+}
+
+// N8NTrigger triggers an n8n webhook workflow by path.
+// path adalah webhook path yang dikonfigurasi di n8n node "Webhook".
+func (r *GatewayRouter) N8NTrigger(ctx context.Context, webhookPath string, payload map[string]interface{}) string {
+	if !r.n8n.IsEnabled() {
+		return "⚠️ n8n tidak dikonfigurasi."
+	}
+	result, err := r.n8n.TriggerWebhook(ctx, webhookPath, payload)
+	if err != nil {
+		return fmt.Sprintf("❌ Gagal trigger webhook '%s': %v", webhookPath, err)
+	}
+	output := result
+	if len(output) > 800 {
+		output = output[:800] + "\n...(truncated)"
+	}
+	if output == "" {
+		return fmt.Sprintf("✅ Workflow `%s` berhasil ditrigger.", webhookPath)
+	}
+	return fmt.Sprintf("✅ *Workflow `%s` selesai:*\n```\n%s\n```", webhookPath, output)
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
