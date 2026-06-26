@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -36,10 +39,18 @@ type Update struct {
 }
 
 type Message struct {
-	MessageID int    `json:"message_id"`
-	Chat      Chat   `json:"chat"`
-	Text      string `json:"text"`
-	From      TGUser `json:"from"`
+	MessageID int         `json:"message_id"`
+	Chat      Chat        `json:"chat"`
+	Text      string      `json:"text"`
+	From      TGUser      `json:"from"`
+	Photo     []PhotoSize `json:"photo"`
+}
+
+type PhotoSize struct {
+	FileID   string `json:"file_id"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	FileSize int    `json:"file_size"`
 }
 
 type Chat struct {
@@ -85,15 +96,19 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ── Shared Update Processor ───────────────────────────────────────────────────
 
 func (h *WebhookHandler) processUpdate(update Update) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second) // boost to 45s for LLM OCR
 	defer cancel()
 
 	if update.CallbackQuery != nil {
 		h.handleCallbackQuery(ctx, update.CallbackQuery)
 		return
 	}
-	if update.Message != nil && update.Message.Text != "" {
-		h.handleMessage(ctx, update.Message)
+	if update.Message != nil {
+		if update.Message.Text != "" {
+			h.handleMessage(ctx, update.Message)
+		} else if len(update.Message.Photo) > 0 {
+			h.handlePhoto(ctx, update.Message)
+		}
 	}
 }
 
@@ -482,4 +497,182 @@ func SetMyCommands(token string) {
 		},
 	})
 	log.Println("[TG] Bot commands registered via setMyCommands")
+}
+
+// ── Unified Bot Photo OCR Integration ─────────────────────────────────────────
+
+type FileResponse struct {
+	OK     bool `json:"ok"`
+	Result struct {
+		FilePath string `json:"file_path"`
+	} `json:"result"`
+}
+
+type ScanResponse struct {
+	Merchant string   `json:"merchant"`
+	Date     string   `json:"date"`
+	Total    float64  `json:"total"`
+	Currency string   `json:"currency"`
+	Category string   `json:"category"`
+	Items    []struct {
+		Name  string  `json:"name"`
+		Price float64 `json:"price"`
+	} `json:"items"`
+	Analysis string `json:"analysis"`
+}
+
+func (h *WebhookHandler) handlePhoto(ctx context.Context, msg *Message) {
+	token := h.cfg.TelegramBotToken
+	chatID := msg.Chat.ID
+	chatIDStr := strconv.FormatInt(chatID, 10)
+
+	// Check if user is linked to FinTrack
+	userID, isLinked := h.router.GetBinding(ctx, chatIDStr)
+	if !isLinked {
+		sendReply(token, chatID, "⚠️ *Akun Telegram Anda belum terhubung*\n\nBuka dashboard FinTrack → Profil → *Telegram*, generate kode, lalu kirim:\n`/link [kode]`")
+		return
+	}
+
+	// 1. Get the largest photo (the last one in the slice)
+	photo := msg.Photo[len(msg.Photo)-1]
+	
+	// Send initial status message
+	sendReply(token, chatID, "📸 *Gambar struk diterima.* Sedang mengunduh dan menganalisis struk... Mohon tunggu.")
+
+	// 2. Call Telegram getFile to retrieve file path
+	fileURL := fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", token, photo.FileID)
+	resp, err := http.Get(fileURL)
+	if err != nil {
+		log.Printf("[TG-OCR] getFile failed: %v", err)
+		sendReply(token, chatID, "❌ Gagal mengunduh metadata foto dari Telegram.")
+		return
+	}
+	defer resp.Body.Close()
+
+	var fileResp FileResponse
+	if err := json.NewDecoder(resp.Body).Decode(&fileResp); err != nil || !fileResp.OK {
+		log.Printf("[TG-OCR] Decode getFile failed: %v", err)
+		sendReply(token, chatID, "❌ Gagal mengurai metadata foto dari Telegram.")
+		return
+	}
+
+	// 3. Download the actual image bytes
+	downloadURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", token, fileResp.Result.FilePath)
+	imgResp, err := http.Get(downloadURL)
+	if err != nil {
+		log.Printf("[TG-OCR] Download image failed: %v", err)
+		sendReply(token, chatID, "❌ Gagal mengunduh gambar struk dari Telegram.")
+		return
+	}
+	defer imgResp.Body.Close()
+
+	imgBytes, err := io.ReadAll(imgResp.Body)
+	if err != nil {
+		log.Printf("[TG-OCR] Read image bytes failed: %v", err)
+		sendReply(token, chatID, "❌ Gagal membaca data gambar.")
+		return
+	}
+
+	// 4. Send the image to Expense Tracker API
+	trackerURL := os.Getenv("EXPENSE_TRACKER_API_URL")
+	if trackerURL == "" {
+		trackerURL = "http://expense-tracker-api:8000"
+	}
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "receipt.jpg")
+	if err != nil {
+		log.Printf("[TG-OCR] Create form file failed: %v", err)
+		sendReply(token, chatID, "❌ Gagal menyiapkan form data upload.")
+		return
+	}
+	if _, err := part.Write(imgBytes); err != nil {
+		log.Printf("[TG-OCR] Write form bytes failed: %v", err)
+		sendReply(token, chatID, "❌ Gagal menulis form data gambar.")
+		return
+	}
+	writer.Close()
+
+	scanURL := fmt.Sprintf("%s/scan", strings.TrimSuffix(trackerURL, "/"))
+	req, err := http.NewRequestWithContext(ctx, "POST", scanURL, body)
+	if err != nil {
+		log.Printf("[TG-OCR] Create HTTP request failed: %v", err)
+		sendReply(token, chatID, "❌ Gagal menyiapkan koneksi API scanner.")
+		return
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 35 * time.Second}
+	scanResp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[TG-OCR] Request scan failed: %v", err)
+		sendReply(token, chatID, "❌ API Expense Tracker offline atau tidak merespons.")
+		return
+	}
+	defer scanResp.Body.Close()
+
+	if scanResp.StatusCode != http.StatusOK {
+		var errData map[string]string
+		_ = json.NewDecoder(scanResp.Body).Decode(&errData)
+		errMsg := errData["error"]
+		if errMsg == "" {
+			errMsg = fmt.Sprintf("HTTP %d", scanResp.StatusCode)
+		}
+		log.Printf("[TG-OCR] Scan status failed: %s", errMsg)
+		sendReply(token, chatID, fmt.Sprintf("❌ Gagal menganalisis struk: %s", errMsg))
+		return
+	}
+
+	var scanRes ScanResponse
+	if err := json.NewDecoder(scanResp.Body).Decode(&scanRes); err != nil {
+		log.Printf("[TG-OCR] Decode scan failed: %v", err)
+		sendReply(token, chatID, "❌ Gagal mengurai data hasil scan dari server.")
+		return
+	}
+
+	// 5. Save the transaction to FinTrack
+	itemsDesc := ""
+	for _, item := range scanRes.Items {
+		priceStr := fmt.Sprintf("%.2f", item.Price)
+		itemsDesc += fmt.Sprintf("  • %s (%s %s)\n", item.Name, scanRes.Currency, priceStr)
+	}
+	if itemsDesc == "" {
+		itemsDesc = "  • (Tidak ada detail item)\n"
+	}
+
+	description := fmt.Sprintf("Scan Struk: %s", scanRes.Merchant)
+	if len(scanRes.Items) > 0 {
+		itemsSummary := ""
+		for idx, item := range scanRes.Items {
+			if idx > 0 {
+				itemsSummary += ", "
+			}
+			itemsSummary += item.Name
+		}
+		if len(itemsSummary) > 60 {
+			itemsSummary = itemsSummary[:57] + "..."
+		}
+		description += fmt.Sprintf(" (%s)", itemsSummary)
+	}
+
+	// Save transaction via router
+	reply := h.router.SaveTransaction(ctx, userID, description, scanRes.Category, int64(scanRes.Total))
+
+	// 6. Format reports and reply to user
+	report := fmt.Sprintf(
+		"📊 *SMART RECEIPT INSIGHT*\n"+
+		"━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+		"🏪 *Merchant:* %s\n"+
+		"📅 *Date:* %s\n"+
+		"💰 *Total:* %s %.2f\n"+
+		"📂 *Category:* %s\n\n"+
+		"🛒 *Items:*\n%s\n"+
+		"💬 *AI Analysis:*\n%s\n\n"+
+		"🔗 *Integrasi FinTrack Status:*\n%s",
+		scanRes.Merchant, scanRes.Date, scanRes.Currency, scanRes.Total, scanRes.Category,
+		itemsDesc, scanRes.Analysis, reply,
+	)
+
+	sendReply(token, chatID, report)
 }
