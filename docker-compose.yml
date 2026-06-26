@@ -2,9 +2,10 @@
 #  FinTrack — Docker Compose
 #  Architecture:
 #    postgres        ← shared database
-#    fintrack-api    ← REST API + internal endpoints (port 8080)
+#    fintrack-api    ← REST API + internal endpoints (port 8080, lokal only)
 #    bot-gateway     ← Telegram bot orchestrator (no DB, no port)
-#    home-server     ← Home server management (port 8090)
+#    home-server     ← Home server management (port 8090, lokal only)
+#    frontend        ← Next.js dashboard (port 3000, exposed via cloudflared)
 # ============================================================
 
 services:
@@ -45,9 +46,12 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8080:8080"   # lokal only — tidak diekspos ke publik
     env_file:
       - ./backend/.env
+    environment:
+      HOME_SERVER_URL:     http://home-server:8090   # internal network
+      HOME_SERVER_API_KEY: ${HOME_SERVER_API_KEY}
     networks:
       - fintrack-net
     logging:
@@ -129,6 +133,42 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+
+  # ─────────────────────────────────────────────
+  #  Frontend — Next.js Dashboard
+  #  Koneksi ke API via Docker internal network
+  #  Diekspos ke publik via cloudflared (port 3000)
+  # ─────────────────────────────────────────────
+  frontend:
+    build:
+      context: ../FinTrack-Fronted
+      dockerfile: Dockerfile
+    container_name: fintrack-frontend
+    restart: unless-stopped
+    depends_on:
+      fintrack-api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"   # lokal only — cloudflared yang expose ke publik
+    environment:
+      # NEXT_PUBLIC_API_URL kosong = frontend pakai relative path (/api/...)
+      # Next.js rewrites akan proxy ke fintrack-api secara internal (server-side)
+      NEXT_PUBLIC_API_URL: ""
+      FINTRACK_API_INTERNAL_URL: http://fintrack-api:8080
+    networks:
+      - fintrack-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000", "||", "exit", "1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
 volumes:
   pgdata:
