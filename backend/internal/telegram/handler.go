@@ -35,12 +35,27 @@ type WebhookHandler struct {
 	// Mode stays active until user sends /stop. Each photo refreshes the TTL.
 	scanOnlyUsers map[int64]*scanOnlyState
 	scanOnlyMu    sync.Mutex
+
+	// mediaGroups buffers album photos (same media_group_id) for 2 seconds
+	// before processing them all together into a single combined PDF.
+	mediaGroups map[string]*mediaGroupBuffer
+	mediaGroupMu sync.Mutex
 }
 
 // scanOnlyState tracks per-user scan batch mode.
 type scanOnlyState struct {
 	LastActive time.Time
 	Count      int // number of receipts scanned so far
+}
+
+// mediaGroupBuffer holds photos belonging to a Telegram album (same media_group_id).
+type mediaGroupBuffer struct {
+	ChatID     int64
+	UserID     string // empty if scan-only mode
+	IsScanOnly bool
+	Photos     []PhotoSize   // largest photo from each message in the album
+	Timer      *time.Timer   // fires processMediaGroup after 2s of no new photos
+	CreatedAt  time.Time
 }
 
 // PendingScan holds a scan result waiting for user's ✅ or ❌ confirmation.
@@ -57,6 +72,7 @@ func NewWebhookHandler(cfg *config.Config, router *gateway.GatewayRouter) *Webho
 		router:        router,
 		pendingScans:  make(map[string]*PendingScan),
 		scanOnlyUsers: make(map[int64]*scanOnlyState),
+		mediaGroups:   make(map[string]*mediaGroupBuffer),
 	}
 	go h.cleanupExpiredScans()
 	return h
@@ -95,11 +111,12 @@ type Update struct {
 }
 
 type Message struct {
-	MessageID int         `json:"message_id"`
-	Chat      Chat        `json:"chat"`
-	Text      string      `json:"text"`
-	From      TGUser      `json:"from"`
-	Photo     []PhotoSize `json:"photo"`
+	MessageID    int         `json:"message_id"`
+	Chat         Chat        `json:"chat"`
+	Text         string      `json:"text"`
+	From         TGUser      `json:"from"`
+	Photo        []PhotoSize `json:"photo"`
+	MediaGroupID string      `json:"media_group_id"`
 }
 
 type PhotoSize struct {
@@ -307,8 +324,9 @@ func (h *WebhookHandler) handleConfirmScan(ctx context.Context, token string, ch
 		fmt.Sprintf("✅ *Struk berhasil disimpan!*\n\n%s\n\n📄 _Menyiapkan laporan PDF..._", reply),
 		nil)
 
-	// Generate and send PDF
-	pdfBytes, err := GenerateReceiptPDF(scanRes, savedAmount)
+	// Generate and send PDF — fetch balance data first
+	bal := h.router.GetBalanceData(ctx, userID)
+	pdfBytes, err := GenerateReceiptPDF(scanRes, savedAmount, bal)
 	if err != nil {
 		log.Printf("[PDF] Generate failed: %v", err)
 		sendReply(token, chatID, "⚠️ Transaksi tersimpan, tapi gagal generate PDF.")
@@ -668,6 +686,57 @@ func (h *WebhookHandler) handlePhoto(ctx context.Context, msg *Message) {
 	chatID := msg.Chat.ID
 	chatIDStr := strconv.FormatInt(chatID, 10)
 
+	// ── Media group (album) buffering ──────────────────────────────────────
+	// Telegram sends each photo in an album as separate messages sharing the
+	// same media_group_id. We collect them for 2 seconds, then process together.
+	if msg.MediaGroupID != "" {
+		largest := msg.Photo[len(msg.Photo)-1]
+
+		// Check mode before buffering
+		h.scanOnlyMu.Lock()
+		st, isScanOnly := h.scanOnlyUsers[chatID]
+		if isScanOnly {
+			st.LastActive = time.Now()
+		}
+		h.scanOnlyMu.Unlock()
+
+		var userID string
+		if !isScanOnly {
+			var isLinked bool
+			userID, isLinked = h.router.GetBinding(ctx, chatIDStr)
+			if !isLinked {
+				sendReply(token, chatID, "⚠️ *Akun Telegram Anda belum terhubung*\n\nGunakan /scan untuk scan struk tanpa akun FinTrack.")
+				return
+			}
+		}
+
+		h.mediaGroupMu.Lock()
+		buf, exists := h.mediaGroups[msg.MediaGroupID]
+		if !exists {
+			buf = &mediaGroupBuffer{
+				ChatID:     chatID,
+				UserID:     userID,
+				IsScanOnly: isScanOnly,
+				CreatedAt:  time.Now(),
+			}
+			h.mediaGroups[msg.MediaGroupID] = buf
+			// First photo of the album — inform user
+			sendReply(token, chatID, fmt.Sprintf("📂 *Album diterima.* Mengumpulkan foto...\n_Tunggu sebentar, semua struk akan diproses sekaligus._"))
+		}
+		buf.Photos = append(buf.Photos, largest)
+
+		// Reset 2-second timer on each new photo
+		if buf.Timer != nil {
+			buf.Timer.Stop()
+		}
+		groupID := msg.MediaGroupID
+		buf.Timer = time.AfterFunc(2*time.Second, func() {
+			h.processMediaGroup(context.Background(), groupID)
+		})
+		h.mediaGroupMu.Unlock()
+		return // handled by processMediaGroup
+	}
+
 	// ── Determine mode: scan-only (batch) OR sandbox (save to DB) ─────────
 	h.scanOnlyMu.Lock()
 	st, isScanOnly := h.scanOnlyUsers[chatID]
@@ -681,6 +750,7 @@ func (h *WebhookHandler) handlePhoto(ctx context.Context, msg *Message) {
 	// For scan-only mode, skip account link check — anyone can scan
 	// For save mode, user must be linked
 	var userID string
+
 	if !isScanOnly {
 		var isLinked bool
 		userID, isLinked = h.router.GetBinding(ctx, chatIDStr)
@@ -810,7 +880,9 @@ func (h *WebhookHandler) handlePhoto(ctx context.Context, msg *Message) {
 
 	if isScanOnly {
 		// ── SCAN ONLY (BATCH): langsung generate PDF, mode TETAP AKTIF ─────
-		pdfBytes, err := GenerateReceiptPDF(scanRes, 0)
+		// Fetch balance only if user is linked (userID is set)
+		bal := h.router.GetBalanceData(ctx, userID)
+		pdfBytes, err := GenerateReceiptPDF(scanRes, 0, bal)
 		if err != nil {
 			log.Printf("[PDF] Generate failed (scan-only): %v", err)
 			sendReply(token, chatID, "⚠️ Gagal generate PDF. Berikut ringkasan scan:\n\n"+formatScanText(scanRes))
@@ -926,4 +998,175 @@ func formatScanText(s ScanResponse) string {
 			"💬 *Analisis:* %s",
 		s.Merchant, s.Date, s.Currency, s.Total, s.Category, itemsDesc, s.Analysis,
 	)
+}
+
+// processMediaGroup is called ~2 seconds after the last photo in an album arrives.
+// It scans all buffered photos in parallel, generates a single combined PDF, and sends it.
+func (h *WebhookHandler) processMediaGroup(ctx context.Context, groupID string) {
+	// Grab and remove the buffer
+	h.mediaGroupMu.Lock()
+	buf, ok := h.mediaGroups[groupID]
+	if ok {
+		delete(h.mediaGroups, groupID)
+	}
+	h.mediaGroupMu.Unlock()
+	if !ok || len(buf.Photos) == 0 {
+		return
+	}
+
+	token := h.cfg.TelegramBotToken
+	chatID := buf.ChatID
+	n := len(buf.Photos)
+
+	sendReply(token, chatID, fmt.Sprintf("🔍 *Memproses %d struk...* Mohon tunggu.", n))
+
+	// ── Scan all photos in parallel ───────────────────────────────────────────
+	type result struct {
+		idx  int
+		scan ScanResponse
+		err  error
+	}
+	results := make([]result, n)
+	var wg sync.WaitGroup
+
+	trackerURL := os.Getenv("EXPENSE_TRACKER_API_URL")
+	if trackerURL == "" {
+		trackerURL = "http://expense-tracker-api:8000"
+	}
+	scanURL := fmt.Sprintf("%s/scan", strings.TrimSuffix(trackerURL, "/"))
+
+	for i, photo := range buf.Photos {
+		wg.Add(1)
+		go func(idx int, ph PhotoSize) {
+			defer wg.Done()
+
+			// Get file path from Telegram
+			fileURL := fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", token, ph.FileID)
+			fileReq, err := http.NewRequestWithContext(ctx, "GET", fileURL, nil)
+			if err != nil {
+				results[idx] = result{idx: idx, err: fmt.Errorf("getFile req: %w", err)}
+				return
+			}
+			resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(fileReq)
+			if err != nil {
+				results[idx] = result{idx: idx, err: fmt.Errorf("getFile: %w", err)}
+				return
+			}
+			defer resp.Body.Close()
+			var fileResp FileResponse
+			if err := json.NewDecoder(resp.Body).Decode(&fileResp); err != nil || !fileResp.OK {
+				results[idx] = result{idx: idx, err: fmt.Errorf("decode getFile")}
+				return
+			}
+
+			// Download image
+			dlURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", token, fileResp.Result.FilePath)
+			dlResp, err := (&http.Client{Timeout: 30 * time.Second}).Get(dlURL)
+			if err != nil {
+				results[idx] = result{idx: idx, err: fmt.Errorf("download: %w", err)}
+				return
+			}
+			defer dlResp.Body.Close()
+			imgBytes, err := io.ReadAll(dlResp.Body)
+			if err != nil {
+				results[idx] = result{idx: idx, err: fmt.Errorf("read img: %w", err)}
+				return
+			}
+
+			// Upload to OCR
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+			part, err := writer.CreateFormFile("file", fmt.Sprintf("receipt_%d.jpg", idx+1))
+			if err != nil {
+				results[idx] = result{idx: idx, err: err}
+				return
+			}
+			if _, err := part.Write(imgBytes); err != nil {
+				results[idx] = result{idx: idx, err: err}
+				return
+			}
+			writer.Close()
+
+			req, err := http.NewRequestWithContext(ctx, "POST", scanURL, &body)
+			if err != nil {
+				results[idx] = result{idx: idx, err: err}
+				return
+			}
+			req.Header.Set("Content-Type", writer.FormDataContentType())
+			scanResp, err := (&http.Client{Timeout: 35 * time.Second}).Do(req)
+			if err != nil {
+				results[idx] = result{idx: idx, err: fmt.Errorf("scan req: %w", err)}
+				return
+			}
+			defer scanResp.Body.Close()
+			if scanResp.StatusCode != http.StatusOK {
+				results[idx] = result{idx: idx, err: fmt.Errorf("scan HTTP %d", scanResp.StatusCode)}
+				return
+			}
+			var sr ScanResponse
+			if err := json.NewDecoder(scanResp.Body).Decode(&sr); err != nil {
+				results[idx] = result{idx: idx, err: err}
+				return
+			}
+			results[idx] = result{idx: idx, scan: sr}
+		}(i, photo)
+	}
+	wg.Wait()
+
+	// Collect successful scans
+	var scans []ScanResponse
+	var failed []int
+	for _, r := range results {
+		if r.err != nil {
+			log.Printf("[ALBUM] Scan photo %d failed: %v", r.idx+1, r.err)
+			failed = append(failed, r.idx+1)
+		} else {
+			scans = append(scans, r.scan)
+		}
+	}
+
+	if len(scans) == 0 {
+		sendReply(token, chatID, "❌ Gagal menganalisis semua foto. Coba lagi satu per satu.")
+		return
+	}
+
+	if len(failed) > 0 {
+		sendReply(token, chatID, fmt.Sprintf("⚠️ %d foto berhasil, %d foto gagal dianalisis.", len(scans), len(failed)))
+	}
+
+	// Fetch balance data
+	bal := h.router.GetBalanceData(ctx, buf.UserID)
+
+	// Generate combined PDF
+	pdfBytes, err := GenerateCombinedReceiptPDF(scans, bal)
+	if err != nil {
+		log.Printf("[ALBUM] Combined PDF failed: %v", err)
+		sendReply(token, chatID, "⚠️ Gagal generate PDF gabungan.")
+		return
+	}
+
+	fileName := fmt.Sprintf("batch_scan_%s_%d_struk.pdf",
+		time.Now().Format("20060102_150405"),
+		len(scans),
+	)
+	if err := sendDocument(token, chatID, fileName, pdfBytes); err != nil {
+		log.Printf("[ALBUM] Send PDF failed: %v", err)
+		sendReply(token, chatID, "⚠️ Gagal mengirim PDF.")
+		return
+	}
+
+	// Offer to save / exit
+	if buf.IsScanOnly {
+		sendWithKeyboard(token, chatID,
+			fmt.Sprintf("✅ *PDF Gabungan (%d struk) Terkirim!*\n\nStruk tidak disimpan ke FinTrack.\nKetik /stop jika selesai scan.", len(scans)),
+			map[string]interface{}{
+				"inline_keyboard": [][]map[string]string{
+					{{"text": "⏹ Selesai Scan", "callback_data": "stop_scan_mode"}},
+				},
+			})
+	} else {
+		sendWithKeyboard(token, chatID,
+			fmt.Sprintf("✅ *PDF Gabungan (%d struk) Terkirim!*\n\nPilih aksi selanjutnya:", len(scans)),
+			afterSaveKeyboard())
+	}
 }

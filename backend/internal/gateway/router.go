@@ -73,6 +73,32 @@ func (r *GatewayRouter) GetBalance(ctx context.Context, userID string) string {
 	)
 }
 
+// BalanceData holds raw balance numbers for use in PDF generation.
+type BalanceData struct {
+	SpendableToday int64
+	SpendableWeek  int64
+	SpendableMonth int64
+	FixedDaily     int64
+}
+
+// GetBalanceData returns raw balance numbers for a user (used for PDF embedding).
+// Returns nil on error.
+func (r *GatewayRouter) GetBalanceData(ctx context.Context, userID string) *BalanceData {
+	if userID == "" {
+		return nil
+	}
+	data, err := r.fintrack.GetBalance(ctx, userID)
+	if err != nil {
+		return nil
+	}
+	return &BalanceData{
+		SpendableToday: data.SpendableToday,
+		SpendableWeek:  data.SpendableWeek,
+		SpendableMonth: data.SpendableMonth,
+		FixedDaily:     data.FixedDaily,
+	}
+}
+
 // GetSummary returns the formatted monthly spending summary for a user.
 func (r *GatewayRouter) GetSummary(ctx context.Context, userID string) string {
 	data, err := r.fintrack.GetSummary(ctx, userID)
