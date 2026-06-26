@@ -420,6 +420,8 @@ func guideText() string {
 		"`Bayar Netflix 60000 #hiburan`\n\n" +
 		"*Tanpa kategori:*\n" +
 		"`Parkir 5000`  → auto: _uncategorized_\n\n" +
+		"📸 *Fitur Pintar Scan Struk:*\n" +
+		"Cukup kirim/unggah *foto struk belanja* Anda langsung ke bot ini. AI akan membaca detail item, total nominal, kategori, serta mencatatnya otomatis ke FinTrack!\n\n" +
 		"*Perintah tersedia:*\n" +
 		"`/saldo` — Saldo yang bisa dibelanjakan\n" +
 		"`/summary` — Rekap pengeluaran bulan ini\n" +

@@ -9,4 +9,4 @@ All notable changes to this project will be documented in this file.
 - `docker-compose.yml` (Why: Configured `EXPENSE_TRACKER_API_URL` under the `bot-gateway` service environment to resolve the unified OCR service).
 
 ### Changed
-- `backend/internal/telegram/handler.go` (Why: Increased webhook update context timeout from 15 seconds to 45 seconds to accommodate LLM & OCR processing times).
+- `backend/internal/telegram/handler.go` (Why: Increased webhook update context timeout from 15 seconds to 45 seconds to accommodate LLM & OCR processing times, and updated `guideText` to include instructions for the photo scan OCR feature).
