@@ -546,7 +546,14 @@ func (h *WebhookHandler) handlePhoto(ctx context.Context, msg *Message) {
 
 	// 2. Call Telegram getFile to retrieve file path
 	fileURL := fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", token, photo.FileID)
-	resp, err := http.Get(fileURL)
+	fileReq, err := http.NewRequestWithContext(ctx, "GET", fileURL, nil) // FIX BUG-04: gunakan ctx
+	if err != nil {
+		log.Printf("[TG-OCR] Build getFile request failed: %v", err)
+		sendReply(token, chatID, "❌ Gagal menyiapkan permintaan metadata foto.")
+		return
+	}
+	fileClient := &http.Client{Timeout: 10 * time.Second}
+	resp, err := fileClient.Do(fileReq)
 	if err != nil {
 		log.Printf("[TG-OCR] getFile failed: %v", err)
 		sendReply(token, chatID, "❌ Gagal mengunduh metadata foto dari Telegram.")
@@ -563,7 +570,14 @@ func (h *WebhookHandler) handlePhoto(ctx context.Context, msg *Message) {
 
 	// 3. Download the actual image bytes
 	downloadURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", token, fileResp.Result.FilePath)
-	imgResp, err := http.Get(downloadURL)
+	dlReq, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil) // FIX BUG-04: gunakan ctx
+	if err != nil {
+		log.Printf("[TG-OCR] Build download request failed: %v", err)
+		sendReply(token, chatID, "❌ Gagal menyiapkan permintaan unduhan gambar.")
+		return
+	}
+	dlClient := &http.Client{Timeout: 30 * time.Second}
+	imgResp, err := dlClient.Do(dlReq)
 	if err != nil {
 		log.Printf("[TG-OCR] Download image failed: %v", err)
 		sendReply(token, chatID, "❌ Gagal mengunduh gambar struk dari Telegram.")
