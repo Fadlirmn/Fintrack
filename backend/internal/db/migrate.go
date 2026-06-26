@@ -13,6 +13,9 @@ var initSQL string
 //go:embed migrations/002_add_fixed_expenses.sql
 var fixedExpensesSQL string
 
+//go:embed migrations/003_add_user_name.sql
+var addUserNameSQL string
+
 // RunMigrations applies all embedded SQL migrations to the database.
 // Uses IF NOT EXISTS / ADD COLUMN IF NOT EXISTS so safe to run on every startup.
 func RunMigrations(db *sqlx.DB) {
@@ -24,6 +27,10 @@ func RunMigrations(db *sqlx.DB) {
 
 	if _, err := db.Exec(fixedExpensesSQL); err != nil {
 		log.Fatalf("Failed to apply migration 002_add_fixed_expenses: %v", err)
+	}
+
+	if _, err := db.Exec(addUserNameSQL); err != nil {
+		log.Fatalf("Failed to apply migration 003_add_user_name: %v", err)
 	}
 
 	log.Println("Database migrations applied successfully")

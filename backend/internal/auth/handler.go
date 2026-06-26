@@ -191,11 +191,12 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// Fetch financial profile
+	// Fetch full profile (including name)
+	var name string
 	var monthlyIncome, wealthGoal int64
 	err := h.db.QueryRowContext(ctx,
-		`SELECT monthly_income, wealth_goal FROM users WHERE id=$1`, userID,
-	).Scan(&monthlyIncome, &wealthGoal)
+		`SELECT COALESCE(name,''), monthly_income, wealth_goal FROM users WHERE id=$1`, userID,
+	).Scan(&name, &monthlyIncome, &wealthGoal)
 	if err != nil {
 		monthlyIncome = 10000000
 		wealthGoal = 30
@@ -216,11 +217,122 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"id":               userID,
+		"name":             name,
 		"email":            email,
 		"telegram_linked":  isLinked,
 		"telegram_chat_id": telegramChatID,
 		"monthly_income":   monthlyIncome,
 		"wealth_goal":      wealthGoal,
+	})
+}
+
+// UpdateAccount handles name, email, and password changes.
+// PUT /api/v1/auth/account
+func (h *AuthHandler) UpdateAccount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	userID, _, ok := GetUserFromContext(r.Context())
+	if !ok {
+		h.writeJSONError(w, "Access token missing or invalid", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Name        string `json:"name"`
+		Email       string `json:"email"`
+		OldPassword string `json:"old_password"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.writeJSONError(w, "Invalid input data", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+
+	// Fetch current credentials
+	var currentEmail, currentHash string
+	if err := h.db.QueryRowContext(ctx,
+		`SELECT email, password_hash FROM users WHERE id=$1`, userID,
+	).Scan(&currentEmail, &currentHash); err != nil {
+		h.writeJSONError(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	// Build dynamic SET clause
+	setClauses := []string{}
+	args := []interface{}{}
+	argIdx := 1
+
+	// Update name if provided
+	if req.Name != "" {
+		setClauses = append(setClauses, "name=$"+itoa(argIdx))
+		args = append(args, strings.TrimSpace(req.Name))
+		argIdx++
+	}
+
+	// Update email if provided and different
+	if req.Email != "" {
+		newEmail := strings.TrimSpace(strings.ToLower(req.Email))
+		if newEmail != currentEmail {
+			// Check uniqueness
+			var existID string
+			err := h.db.QueryRowContext(ctx, `SELECT id FROM users WHERE email=$1`, newEmail).Scan(&existID)
+			if err == nil {
+				h.writeJSONError(w, "Email sudah digunakan akun lain", http.StatusBadRequest)
+				return
+			}
+			setClauses = append(setClauses, "email=$"+itoa(argIdx))
+			args = append(args, newEmail)
+			argIdx++
+		}
+	}
+
+	// Update password if both old and new provided
+	if req.NewPassword != "" {
+		if req.OldPassword == "" {
+			h.writeJSONError(w, "Password lama wajib diisi untuk ganti password", http.StatusBadRequest)
+			return
+		}
+		if len(req.NewPassword) < 6 {
+			h.writeJSONError(w, "Password baru minimal 6 karakter", http.StatusBadRequest)
+			return
+		}
+		// Verify old password
+		if err := bcrypt.CompareHashAndPassword([]byte(currentHash), []byte(req.OldPassword)); err != nil {
+			h.writeJSONError(w, "Password lama tidak cocok", http.StatusUnauthorized)
+			return
+		}
+		// Hash new password
+		newHash, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+		if err != nil {
+			h.writeJSONError(w, "Gagal mengamankan password baru", http.StatusInternalServerError)
+			return
+		}
+		setClauses = append(setClauses, "password_hash=$"+itoa(argIdx))
+		args = append(args, string(newHash))
+		argIdx++
+	}
+
+	if len(setClauses) == 0 {
+		h.writeJSONError(w, "Tidak ada perubahan yang dikirim", http.StatusBadRequest)
+		return
+	}
+
+	args = append(args, userID)
+	query := "UPDATE users SET " + strings.Join(setClauses, ", ") + " WHERE id=$" + itoa(argIdx)
+
+	if _, err := h.db.ExecContext(ctx, query, args...); err != nil {
+		h.writeJSONError(w, "Gagal menyimpan perubahan", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"message": "Profil berhasil diperbarui",
 	})
 }
 
@@ -331,4 +443,17 @@ func generateRandomCode(n int) string {
 		b[i] = letters[r.Intn(len(letters))]
 	}
 	return string(b)
+}
+
+// itoa converts an integer to its string representation (for SQL parameter indexing).
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	digits := []byte{}
+	for n > 0 {
+		digits = append([]byte{byte('0' + n%10)}, digits...)
+		n /= 10
+	}
+	return string(digits)
 }

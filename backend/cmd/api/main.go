@@ -65,6 +65,7 @@ func main() {
 	// ── Protected Auth Endpoints ──────────────────────────────────────────
 	mux.Handle("GET /api/v1/auth/me", authMiddleware(http.HandlerFunc(authHandler.Me)))
 	mux.Handle("PUT /api/v1/auth/profile", authMiddleware(http.HandlerFunc(authHandler.UpdateProfile)))
+	mux.Handle("PUT /api/v1/auth/account", authMiddleware(http.HandlerFunc(authHandler.UpdateAccount)))
 	mux.Handle("POST /api/v1/telegram/link-code", authMiddleware(http.HandlerFunc(authHandler.GenerateLinkCode)))
 
 	// ── Transaction Endpoints (JWT Protected) ─────────────────────────────
