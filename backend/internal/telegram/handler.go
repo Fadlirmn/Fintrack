@@ -273,6 +273,63 @@ func (h *WebhookHandler) handleCallbackQuery(ctx context.Context, cq *CallbackQu
 		editMessage(token, chatID, msgID,
 			"❌ *Scan dibatalkan.*\n\nTransaksi tidak disimpan.",
 			mainMenuKeyboard(isLinked))
+
+	case strings.HasPrefix(data, "save_all_scans:"):
+		// Save all scans from an album batch to FinTrack
+		keysStr := strings.TrimPrefix(data, "save_all_scans:")
+		keys := strings.Split(keysStr, ",")
+
+		editMessage(token, chatID, msgID,
+			fmt.Sprintf("⏳ *Menyimpan %d transaksi ke FinTrack...*", len(keys)),
+			nil)
+
+		var savedCount int
+		var totalAmount int64
+		for _, key := range keys {
+			key = strings.TrimSpace(key)
+			h.pendingMu.Lock()
+			ps, ok := h.pendingScans[key]
+			if ok {
+				delete(h.pendingScans, key)
+			}
+			h.pendingMu.Unlock()
+			if !ok || ps == nil {
+				continue
+			}
+			// Build description
+			uid := ps.UserID
+			if uid == "" {
+				uid = userID
+			}
+			description := cleanText(ps.ScanRes.Merchant)
+			if len(ps.ScanRes.Items) > 0 {
+				var items []string
+				for _, item := range ps.ScanRes.Items {
+					items = append(items, cleanText(item.Name))
+				}
+				summary := strings.Join(items, ", ")
+				if len(summary) > 60 {
+					summary = summary[:57] + "..."
+				}
+				description += " (" + summary + ")"
+			}
+			amount := int64(ps.ScanRes.Total)
+			h.router.SaveTransaction(ctx, uid, description, ps.ScanRes.Category, amount)
+			savedCount++
+			totalAmount += amount
+		}
+
+		if savedCount == 0 {
+			editMessage(token, chatID, msgID,
+				"⚠️ *Sesi sudah kedaluwarsa.* Kirim ulang foto untuk mencoba lagi.",
+				mainMenuKeyboard(isLinked))
+			return
+		}
+
+		editMessage(token, chatID, msgID,
+			fmt.Sprintf("✅ *%d transaksi berhasil disimpan!*\n\n💰 Total: *Rp %s*\n\nSemua struk sudah tercatat di FinTrack.",
+				savedCount, formatThousands(totalAmount)),
+			mainMenuKeyboard(isLinked))
 	}
 }
 
@@ -1155,18 +1212,42 @@ func (h *WebhookHandler) processMediaGroup(ctx context.Context, groupID string) 
 		return
 	}
 
-	// Offer to save / exit
-	if buf.IsScanOnly {
-		sendWithKeyboard(token, chatID,
-			fmt.Sprintf("✅ *PDF Gabungan (%d struk) Terkirim!*\n\nStruk tidak disimpan ke FinTrack.\nKetik /stop jika selesai scan.", len(scans)),
-			map[string]interface{}{
-				"inline_keyboard": [][]map[string]string{
-					{{"text": "⏹ Selesai Scan", "callback_data": "stop_scan_mode"}},
-				},
-			})
-	} else {
-		sendWithKeyboard(token, chatID,
-			fmt.Sprintf("✅ *PDF Gabungan (%d struk) Terkirim!*\n\nPilih aksi selanjutnya:", len(scans)),
-			afterSaveKeyboard())
+	// Store each scan to pendingScans so user can save individually or all at once
+	var scanKeys []string
+	for _, sc := range scans {
+		key := fmt.Sprintf("%d_%d", chatID, time.Now().UnixNano())
+		h.pendingMu.Lock()
+		h.pendingScans[key] = &PendingScan{
+			ScanRes:   sc,
+			UserID:    buf.UserID,
+			ChatID:    chatID,
+			CreatedAt: time.Now(),
+		}
+		h.pendingMu.Unlock()
+		scanKeys = append(scanKeys, key)
+		time.Sleep(1 * time.Microsecond) // ensure unique UnixNano keys
 	}
+
+	// Build save-all keyboard
+	var kbRows [][]map[string]string
+	if buf.UserID != "" {
+		// Offer save all as batch
+		allKeys := strings.Join(scanKeys, ",")
+		kbRows = append(kbRows, []map[string]string{
+			{"text": fmt.Sprintf("✅ Simpan Semua (%d struk) ke FinTrack", len(scans)), "callback_data": "save_all_scans:" + allKeys},
+		})
+	}
+	if buf.IsScanOnly {
+		kbRows = append(kbRows, []map[string]string{
+			{"text": "⏹ Selesai Scan", "callback_data": "stop_scan_mode"},
+		})
+	} else {
+		kbRows = append(kbRows, []map[string]string{
+			{"text": "🏠 Menu Utama", "callback_data": "btn_menu"},
+		})
+	}
+
+	sendWithKeyboard(token, chatID,
+		fmt.Sprintf("✅ *PDF Gabungan (%d struk) Terkirim!*\n\n📄 Struk belum disimpan ke FinTrack.\nKlik *Simpan Semua* untuk mencatat semua transaksi.", len(scans)),
+		map[string]interface{}{"inline_keyboard": kbRows})
 }
