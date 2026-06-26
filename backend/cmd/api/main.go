@@ -99,6 +99,7 @@ func main() {
 	mux.Handle("GET /internal/v1/balance", apiKeyMiddleware(http.HandlerFunc(internalTxHandler.GetBalance)))
 	mux.Handle("GET /internal/v1/summary", apiKeyMiddleware(http.HandlerFunc(internalTxHandler.GetSummary)))
 	mux.Handle("POST /internal/v1/transactions", apiKeyMiddleware(http.HandlerFunc(internalTxHandler.SaveTransaction)))
+	mux.Handle("GET /internal/v1/account", apiKeyMiddleware(http.HandlerFunc(internalTxHandler.GetAccountDetail)))
 
 	// Apply CORS wrapper (whitelist from env ALLOWED_ORIGINS)
 	allowedOrigins := getAllowedOrigins()

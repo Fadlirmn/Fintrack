@@ -188,3 +188,35 @@ func (c *Client) SaveTransaction(ctx context.Context, userID, description, categ
 	}
 	return result, nil
 }
+
+// ── Account Detail ────────────────────────────────────────────────────────────
+
+type AccountDetailResponse struct {
+	UserID          string `json:"user_id"`
+	Email           string `json:"email"`
+	MonthlyIncome   int64  `json:"monthly_income"`
+	WealthGoal      int64  `json:"wealth_goal"`
+	TelegramLinked  bool   `json:"telegram_linked"`
+	TelegramChatID  string `json:"telegram_chat_id"`
+	MonthSpending   int64  `json:"month_spending"`
+	MonthTxCount    int    `json:"month_tx_count"`
+	Month           string `json:"month"`
+	Year            int    `json:"year"`
+}
+
+// GetAccountDetail returns the full account profile for a user (used by /akun command).
+func (c *Client) GetAccountDetail(ctx context.Context, userID string) (AccountDetailResponse, error) {
+	url := fmt.Sprintf("%s/internal/v1/account?user_id=%s", c.baseURL, userID)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req.Header.Set("X-API-Key", c.apiKey)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return AccountDetailResponse{}, fmt.Errorf("fintrack account detail: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var result AccountDetailResponse
+	_ = json.NewDecoder(resp.Body).Decode(&result)
+	return result, nil
+}

@@ -115,6 +115,68 @@ func (r *GatewayRouter) SaveTransaction(ctx context.Context, userID, description
 	)
 }
 
+// GetAccountDetail returns formatted account info for the /akun command.
+func (r *GatewayRouter) GetAccountDetail(ctx context.Context, userID string) string {
+	data, err := r.fintrack.GetAccountDetail(ctx, userID)
+	if err != nil {
+		return "❌ Gagal mengambil data akun. Coba lagi nanti."
+	}
+
+	// Mask email: show first 3 chars + *** + @domain
+	email := data.Email
+	maskedEmail := email
+	if at := strings.Index(email, "@"); at > 3 {
+		maskedEmail = email[:3] + strings.Repeat("*", at-3) + email[at:]
+	}
+
+	tgStatus := "🔴 Belum terhubung"
+	if data.TelegramLinked {
+		tgStatus = "🟢 Terhubung"
+	}
+
+	spendPct := float64(100-data.WealthGoal) / 100.0
+	budgetMonth := int64(float64(data.MonthlyIncome) * spendPct)
+
+	var budgetBar string
+	if budgetMonth > 0 {
+		pct := float64(data.MonthSpending) / float64(budgetMonth) * 100
+		if pct > 100 {
+			pct = 100
+		}
+		filled := int(pct / 10)
+		budgetBar = fmt.Sprintf("[%s%s] %.0f%%",
+			strings.Repeat("█", filled),
+			strings.Repeat("░", 10-filled),
+			pct,
+		)
+	}
+
+	return fmt.Sprintf(
+		"👤 *Detail Akun FinTrack*\n"+
+			"━━━━━━━━━━━━━━━━\n"+
+			"📧 *Email:* `%s`\n"+
+			"💼 *Income Bulanan:* %s\n"+
+			"🎯 *Target Simpan:* %d%%\n"+
+			"📊 *Budget Belanja/bln:* %s\n"+
+			"━━━━━━━━━━━━━━━━\n"+
+			"📅 *%s %d*\n"+
+			"💸 *Total Spending:* %s\n"+
+			"🧾 *Jumlah Transaksi:* %d kali\n"+
+			"%s\n"+
+			"━━━━━━━━━━━━━━━━\n"+
+			"📱 *Telegram:* %s",
+		maskedEmail,
+		formatRupiah(data.MonthlyIncome),
+		data.WealthGoal,
+		formatRupiah(budgetMonth),
+		data.Month, data.Year,
+		formatRupiah(data.MonthSpending),
+		data.MonthTxCount,
+		budgetBar,
+		tgStatus,
+	)
+}
+
 // ── Home Server Commands ───────────────────────────────────────────────────────
 
 // ServerStatus returns formatted server info from home-server.

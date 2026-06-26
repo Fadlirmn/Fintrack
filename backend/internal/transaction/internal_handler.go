@@ -296,6 +296,71 @@ func (ih *InternalHandlerDB) SaveTransaction(w http.ResponseWriter, r *http.Requ
 	})
 }
 
+// ── GET /internal/v1/account?user_id=<id> ────────────────────────────────
+// Returns full account detail for the bot's /akun command.
+
+func (ih *InternalHandlerDB) GetAccountDetail(w http.ResponseWriter, r *http.Request) {
+	userID := r.URL.Query().Get("user_id")
+	if userID == "" {
+		writeInternalError(w, "user_id required", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+
+	// 1. User profile
+	var email string
+	var monthlyIncome, wealthGoal int64
+	err := ih.h.db.QueryRowContext(ctx,
+		`SELECT email, monthly_income, wealth_goal FROM users WHERE id=$1`, userID,
+	).Scan(&email, &monthlyIncome, &wealthGoal)
+	if err != nil {
+		writeInternalError(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	// 2. Telegram binding
+	var chatID sql.NullString
+	_ = ih.h.db.QueryRowContext(ctx,
+		`SELECT chat_id FROM telegram_binds WHERE user_id=$1 AND is_active=TRUE LIMIT 1`, userID,
+	).Scan(&chatID)
+
+	// 3. Monthly spending
+	now := time.Now()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
+	var monthSpend int64
+	_ = ih.h.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(amount),0) FROM transactions WHERE user_id=$1 AND created_at>=$2`,
+		userID, monthStart,
+	).Scan(&monthSpend)
+
+	// 4. Transaction count this month
+	var txCount int
+	_ = ih.h.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM transactions WHERE user_id=$1 AND created_at>=$2`,
+		userID, monthStart,
+	).Scan(&txCount)
+
+	telegramChatID := ""
+	if chatID.Valid {
+		telegramChatID = chatID.String
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"user_id":        userID,
+		"email":          email,
+		"monthly_income": monthlyIncome,
+		"wealth_goal":    wealthGoal,
+		"telegram_linked": chatID.Valid,
+		"telegram_chat_id": telegramChatID,
+		"month_spending": monthSpend,
+		"month_tx_count": txCount,
+		"month":          now.Month().String(),
+		"year":           now.Year(),
+	})
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────
 
 func writeInternalError(w http.ResponseWriter, msg string, code int) {

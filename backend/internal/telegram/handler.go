@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"fintrack-backend/config"
@@ -24,10 +25,45 @@ import (
 type WebhookHandler struct {
 	cfg    *config.Config
 	router *gateway.GatewayRouter
+
+	// pendingScans holds OCR results awaiting user confirmation (sandbox mode).
+	// Key: UUID string. Auto-expired after 5 minutes.
+	pendingScans   map[string]*PendingScan
+	pendingMu      sync.Mutex
+}
+
+// PendingScan holds a scan result waiting for user's ✅ or ❌ confirmation.
+type PendingScan struct {
+	ScanRes   ScanResponse
+	UserID    string
+	ChatID    int64
+	CreatedAt time.Time
 }
 
 func NewWebhookHandler(cfg *config.Config, router *gateway.GatewayRouter) *WebhookHandler {
-	return &WebhookHandler{cfg: cfg, router: router}
+	h := &WebhookHandler{
+		cfg:          cfg,
+		router:       router,
+		pendingScans: make(map[string]*PendingScan),
+	}
+	// Background goroutine to clean up expired pending scans (TTL = 5 minutes)
+	go h.cleanupExpiredScans()
+	return h
+}
+
+// cleanupExpiredScans removes pendingScans older than 5 minutes every minute.
+func (h *WebhookHandler) cleanupExpiredScans() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		h.pendingMu.Lock()
+		for key, ps := range h.pendingScans {
+			if time.Since(ps.CreatedAt) > 5*time.Minute {
+				delete(h.pendingScans, key)
+			}
+		}
+		h.pendingMu.Unlock()
+	}
 }
 
 // ── Telegram Types ────────────────────────────────────────────────────────────
@@ -96,7 +132,7 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ── Shared Update Processor ───────────────────────────────────────────────────
 
 func (h *WebhookHandler) processUpdate(update Update) {
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second) // boost to 45s for LLM OCR
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	if update.CallbackQuery != nil {
@@ -124,31 +160,124 @@ func (h *WebhookHandler) handleCallbackQuery(ctx context.Context, cq *CallbackQu
 	chatIDStr := strconv.FormatInt(chatID, 10)
 	userID, isLinked := h.router.GetBinding(ctx, chatIDStr)
 
-	switch cq.Data {
-	case "btn_refresh", "btn_menu":
+	data := cq.Data
+
+	switch {
+	case data == "btn_refresh" || data == "btn_menu":
 		name := cq.From.FirstName
 		editMessage(token, chatID, msgID, welcomeText(name, isLinked), mainMenuKeyboard(isLinked))
 
-	case "btn_saldo":
+	case data == "btn_saldo":
 		if !isLinked {
 			editMessage(token, chatID, msgID, notLinkedText(), mainMenuKeyboard(false))
 			return
 		}
 		editMessage(token, chatID, msgID, h.router.GetBalance(ctx, userID), mainMenuKeyboard(true))
 
-	case "btn_summary":
+	case data == "btn_summary":
 		if !isLinked {
 			editMessage(token, chatID, msgID, notLinkedText(), mainMenuKeyboard(false))
 			return
 		}
 		editMessage(token, chatID, msgID, h.router.GetSummary(ctx, userID), mainMenuKeyboard(true))
 
-	case "btn_panduan":
+	case data == "btn_akun":
+		if !isLinked {
+			editMessage(token, chatID, msgID, notLinkedText(), mainMenuKeyboard(false))
+			return
+		}
+		editMessage(token, chatID, msgID, h.router.GetAccountDetail(ctx, userID), mainMenuKeyboard(true))
+
+	case data == "btn_panduan":
 		editMessage(token, chatID, msgID, guideText(), mainMenuKeyboard(isLinked))
 
-	case "btn_cara_link":
+	case data == "btn_cara_link":
 		editMessage(token, chatID, msgID, linkGuideText(), mainMenuKeyboard(false))
+
+	// ── Scan Sandbox Callbacks ─────────────────────────────────────────────
+
+	case strings.HasPrefix(data, "confirm_scan:"):
+		scanKey := strings.TrimPrefix(data, "confirm_scan:")
+		h.handleConfirmScan(ctx, token, chatID, msgID, userID, isLinked, scanKey)
+
+	case strings.HasPrefix(data, "cancel_scan:"):
+		scanKey := strings.TrimPrefix(data, "cancel_scan:")
+		h.pendingMu.Lock()
+		delete(h.pendingScans, scanKey)
+		h.pendingMu.Unlock()
+		editMessage(token, chatID, msgID,
+			"❌ *Scan dibatalkan.*\n\nTransaksi tidak disimpan.",
+			mainMenuKeyboard(isLinked))
 	}
+}
+
+// handleConfirmScan saves a previously scanned receipt to DB and sends back a PDF.
+func (h *WebhookHandler) handleConfirmScan(ctx context.Context, token string, chatID int64, msgID int, userID string, isLinked bool, scanKey string) {
+	h.pendingMu.Lock()
+	ps, ok := h.pendingScans[scanKey]
+	if ok {
+		delete(h.pendingScans, scanKey)
+	}
+	h.pendingMu.Unlock()
+
+	if !ok {
+		editMessage(token, chatID, msgID,
+			"⚠️ *Sesi scan sudah kedaluwarsa* (5 menit).\n\nKirim ulang foto struk untuk mencoba lagi.",
+			mainMenuKeyboard(isLinked))
+		return
+	}
+
+	if !isLinked || userID == "" {
+		editMessage(token, chatID, msgID, notLinkedText(), mainMenuKeyboard(false))
+		return
+	}
+
+	scanRes := ps.ScanRes
+
+	// Build description
+	description := fmt.Sprintf("Scan Struk: %s", scanRes.Merchant)
+	if len(scanRes.Items) > 0 {
+		itemsSummary := ""
+		for idx, item := range scanRes.Items {
+			if idx > 0 {
+				itemsSummary += ", "
+			}
+			itemsSummary += item.Name
+		}
+		if len(itemsSummary) > 60 {
+			itemsSummary = itemsSummary[:57] + "..."
+		}
+		description += fmt.Sprintf(" (%s)", itemsSummary)
+	}
+
+	// Save to DB
+	savedAmount := int64(scanRes.Total)
+	reply := h.router.SaveTransaction(ctx, userID, description, scanRes.Category, savedAmount)
+
+	// Update message with saved confirmation
+	editMessage(token, chatID, msgID,
+		fmt.Sprintf("✅ *Struk berhasil disimpan!*\n\n%s\n\n📄 _Menyiapkan laporan PDF..._", reply),
+		nil)
+
+	// Generate and send PDF
+	pdfBytes, err := GenerateReceiptPDF(scanRes, savedAmount)
+	if err != nil {
+		log.Printf("[PDF] Generate failed: %v", err)
+		sendReply(token, chatID, "⚠️ Transaksi tersimpan, tapi gagal generate PDF.")
+		sendWithKeyboard(token, chatID, "Pilih aksi selanjutnya:", afterSaveKeyboard())
+		return
+	}
+
+	fileName := fmt.Sprintf("struk_%s_%s.pdf",
+		strings.ReplaceAll(strings.ToLower(scanRes.Merchant), " ", "_"),
+		time.Now().Format("20060102_150405"),
+	)
+	if err := sendDocument(token, chatID, fileName, pdfBytes); err != nil {
+		log.Printf("[PDF] Send failed: %v", err)
+		sendReply(token, chatID, "⚠️ Transaksi tersimpan, tapi gagal mengirim PDF.")
+	}
+
+	sendWithKeyboard(token, chatID, "Pilih aksi selanjutnya:", afterSaveKeyboard())
 }
 
 // ── Message Handler ───────────────────────────────────────────────────────────
@@ -198,6 +327,9 @@ func (h *WebhookHandler) handleMessage(ctx context.Context, msg *Message) {
 	case strings.HasPrefix(text, "/summary"), strings.HasPrefix(text, "/rekap"):
 		sendReply(token, chatID, h.router.GetSummary(ctx, userID))
 
+	case strings.HasPrefix(text, "/akun"):
+		sendReply(token, chatID, h.router.GetAccountDetail(ctx, userID))
+
 	default:
 		// Default: attempt to parse as expense entry
 		parsed, err := parser.ParseMessage(text)
@@ -219,10 +351,11 @@ func mainMenuKeyboard(isLinked bool) map[string]interface{} {
 			{"text": "📊 Rekap Bulan", "callback_data": "btn_summary"},
 		},
 		{
+			{"text": "👤 Akun Saya", "callback_data": "btn_akun"},
 			{"text": "📋 Panduan Catat", "callback_data": "btn_panduan"},
-			{"text": "🔄 Refresh", "callback_data": "btn_refresh"},
 		},
 		{
+			{"text": "🔄 Refresh", "callback_data": "btn_refresh"},
 			{"text": "🌐 Buka Dashboard", "url": "https://fintrack.home-sumbul.my.id"},
 		},
 	}
@@ -234,7 +367,6 @@ func mainMenuKeyboard(isLinked bool) map[string]interface{} {
 	return map[string]interface{}{"inline_keyboard": rows}
 }
 
-
 func afterSaveKeyboard() map[string]interface{} {
 	return map[string]interface{}{
 		"inline_keyboard": [][]map[string]string{
@@ -244,6 +376,17 @@ func afterSaveKeyboard() map[string]interface{} {
 			},
 			{
 				{"text": "🏠 Menu Utama", "callback_data": "btn_menu"},
+			},
+		},
+	}
+}
+
+func scanConfirmKeyboard(scanKey string) map[string]interface{} {
+	return map[string]interface{}{
+		"inline_keyboard": [][]map[string]string{
+			{
+				{"text": "✅ Simpan Transaksi", "callback_data": "confirm_scan:" + scanKey},
+				{"text": "❌ Batal", "callback_data": "cancel_scan:" + scanKey},
 			},
 		},
 	}
@@ -293,10 +436,11 @@ func guideText() string {
 		"*Tanpa kategori:*\n" +
 		"`Parkir 5000`  → auto: _uncategorized_\n\n" +
 		"📸 *Fitur Pintar Scan Struk:*\n" +
-		"Cukup kirim/unggah *foto struk belanja* Anda langsung ke bot ini. AI akan membaca detail item, total nominal, kategori, serta mencatatnya otomatis ke FinTrack!\n\n" +
+		"Cukup kirim/unggah *foto struk belanja* Anda langsung ke bot ini. AI akan membaca detail item, total nominal, kategori, serta menampilkan preview untuk dikonfirmasi sebelum disimpan. Laporan PDF akan dikirim otomatis!\n\n" +
 		"*Perintah tersedia:*\n" +
 		"`/saldo` — Saldo yang bisa dibelanjakan\n" +
 		"`/summary` — Rekap pengeluaran bulan ini\n" +
+		"`/akun` — Detail profil akun keuangan\n" +
 		"`/menu` — Kembali ke menu utama"
 }
 
@@ -311,22 +455,28 @@ func sendReply(token string, chatID int64, text string) {
 }
 
 func sendWithKeyboard(token string, chatID int64, text string, keyboard map[string]interface{}) {
-	callTelegramAPI(token, "sendMessage", map[string]interface{}{
-		"chat_id":      chatID,
-		"text":         text,
-		"parse_mode":   "Markdown",
-		"reply_markup": keyboard,
-	})
+	payload := map[string]interface{}{
+		"chat_id":    chatID,
+		"text":       text,
+		"parse_mode": "Markdown",
+	}
+	if keyboard != nil {
+		payload["reply_markup"] = keyboard
+	}
+	callTelegramAPI(token, "sendMessage", payload)
 }
 
 func editMessage(token string, chatID int64, msgID int, text string, keyboard map[string]interface{}) {
-	callTelegramAPI(token, "editMessageText", map[string]interface{}{
-		"chat_id":      chatID,
-		"message_id":   msgID,
-		"text":         text,
-		"parse_mode":   "Markdown",
-		"reply_markup": keyboard,
-	})
+	payload := map[string]interface{}{
+		"chat_id":    chatID,
+		"message_id": msgID,
+		"text":       text,
+		"parse_mode": "Markdown",
+	}
+	if keyboard != nil {
+		payload["reply_markup"] = keyboard
+	}
+	callTelegramAPI(token, "editMessageText", payload)
 }
 
 func answerCallbackQuery(token, queryID, text string) {
@@ -352,6 +502,37 @@ func callTelegramAPI(token, method string, payload map[string]interface{}) {
 	defer resp.Body.Close()
 }
 
+// sendDocument uploads a file to a Telegram chat via sendDocument (multipart/form-data).
+func sendDocument(token string, chatID int64, filename string, data []byte) error {
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendDocument", token)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	_ = writer.WriteField("chat_id", strconv.FormatInt(chatID, 10))
+
+	part, err := writer.CreateFormFile("document", filename)
+	if err != nil {
+		return fmt.Errorf("create form file: %w", err)
+	}
+	if _, err := part.Write(data); err != nil {
+		return fmt.Errorf("write file data: %w", err)
+	}
+	writer.Close()
+
+	resp, err := http.Post(url, writer.FormDataContentType(), &body)
+	if err != nil {
+		return fmt.Errorf("http post: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("telegram sendDocument HTTP %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
 // SetMyCommands registers bot commands with BotFather.
 func SetMyCommands(token string) {
 	callTelegramAPI(token, "setMyCommands", map[string]interface{}{
@@ -360,6 +541,7 @@ func SetMyCommands(token string) {
 			{"command": "menu", "description": "Tampilkan menu interaktif"},
 			{"command": "saldo", "description": "Lihat saldo yang bisa dibelanjakan"},
 			{"command": "summary", "description": "Rekap pengeluaran bulan ini"},
+			{"command": "akun", "description": "Detail profil akun keuangan"},
 			{"command": "link", "description": "Hubungkan akun: /link [kode]"},
 			{"command": "help", "description": "Panduan format pencatatan"},
 		},
@@ -403,13 +585,13 @@ func (h *WebhookHandler) handlePhoto(ctx context.Context, msg *Message) {
 
 	// 1. Get the largest photo (the last one in the slice)
 	photo := msg.Photo[len(msg.Photo)-1]
-	
+
 	// Send initial status message
-	sendReply(token, chatID, "📸 *Gambar struk diterima.* Sedang mengunduh dan menganalisis struk... Mohon tunggu.")
+	sendReply(token, chatID, "📸 *Gambar struk diterima.* Sedang menganalisis... Mohon tunggu.")
 
 	// 2. Call Telegram getFile to retrieve file path
 	fileURL := fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", token, photo.FileID)
-	fileReq, err := http.NewRequestWithContext(ctx, "GET", fileURL, nil) // FIX BUG-04: gunakan ctx
+	fileReq, err := http.NewRequestWithContext(ctx, "GET", fileURL, nil)
 	if err != nil {
 		log.Printf("[TG-OCR] Build getFile request failed: %v", err)
 		sendReply(token, chatID, "❌ Gagal menyiapkan permintaan metadata foto.")
@@ -433,7 +615,7 @@ func (h *WebhookHandler) handlePhoto(ctx context.Context, msg *Message) {
 
 	// 3. Download the actual image bytes
 	downloadURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", token, fileResp.Result.FilePath)
-	dlReq, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil) // FIX BUG-04: gunakan ctx
+	dlReq, err := http.NewRequestWithContext(ctx, "GET", downloadURL, nil)
 	if err != nil {
 		log.Printf("[TG-OCR] Build download request failed: %v", err)
 		sendReply(token, chatID, "❌ Gagal menyiapkan permintaan unduhan gambar.")
@@ -513,48 +695,49 @@ func (h *WebhookHandler) handlePhoto(ctx context.Context, msg *Message) {
 		return
 	}
 
-	// 5. Save the transaction to FinTrack
+	// 5. ── SANDBOX MODE: Store result and ask for confirmation ─────────────
+
+	// Build items preview text
 	itemsDesc := ""
 	for _, item := range scanRes.Items {
-		priceStr := fmt.Sprintf("%.2f", item.Price)
+		priceStr := fmt.Sprintf("%.0f", item.Price)
 		itemsDesc += fmt.Sprintf("  • %s (%s %s)\n", item.Name, scanRes.Currency, priceStr)
 	}
 	if itemsDesc == "" {
 		itemsDesc = "  • (Tidak ada detail item)\n"
 	}
 
-	description := fmt.Sprintf("Scan Struk: %s", scanRes.Merchant)
-	if len(scanRes.Items) > 0 {
-		itemsSummary := ""
-		for idx, item := range scanRes.Items {
-			if idx > 0 {
-				itemsSummary += ", "
-			}
-			itemsSummary += item.Name
-		}
-		if len(itemsSummary) > 60 {
-			itemsSummary = itemsSummary[:57] + "..."
-		}
-		description += fmt.Sprintf(" (%s)", itemsSummary)
+	// Store in pending map
+	scanKey := fmt.Sprintf("%d_%d", chatID, time.Now().UnixNano())
+	h.pendingMu.Lock()
+	h.pendingScans[scanKey] = &PendingScan{
+		ScanRes:   scanRes,
+		UserID:    userID,
+		ChatID:    chatID,
+		CreatedAt: time.Now(),
 	}
+	h.pendingMu.Unlock()
 
-	// Save transaction via router
-	reply := h.router.SaveTransaction(ctx, userID, description, scanRes.Category, int64(scanRes.Total))
-
-	// 6. Format reports and reply to user
-	report := fmt.Sprintf(
-		"📊 *SMART RECEIPT INSIGHT*\n"+
-		"━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
-		"🏪 *Merchant:* %s\n"+
-		"📅 *Date:* %s\n"+
-		"💰 *Total:* %s %.2f\n"+
-		"📂 *Category:* %s\n\n"+
-		"🛒 *Items:*\n%s\n"+
-		"💬 *AI Analysis:*\n%s\n\n"+
-		"🔗 *Integrasi FinTrack Status:*\n%s",
-		scanRes.Merchant, scanRes.Date, scanRes.Currency, scanRes.Total, scanRes.Category,
-		itemsDesc, scanRes.Analysis, reply,
+	// 6. Send preview with confirmation keyboard
+	preview := fmt.Sprintf(
+		"📊 *HASIL SCAN STRUK — PREVIEW*\n"+
+			"━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+			"🏪 *Merchant:* %s\n"+
+			"📅 *Tanggal:* %s\n"+
+			"💰 *Total:* %s %.0f\n"+
+			"📂 *Kategori:* %s\n\n"+
+			"🛒 *Item:*\n%s\n"+
+			"💬 *Analisis:*\n_%s_\n\n"+
+			"━━━━━━━━━━━━━━━━━━━━━━━━━\n"+
+			"⏳ _Konfirmasi dalam 5 menit sebelum kedaluwarsa_\n\n"+
+			"Apakah kamu ingin menyimpan transaksi ini ke FinTrack?",
+		scanRes.Merchant,
+		scanRes.Date,
+		scanRes.Currency, scanRes.Total,
+		scanRes.Category,
+		itemsDesc,
+		scanRes.Analysis,
 	)
 
-	sendReply(token, chatID, report)
+	sendWithKeyboard(token, chatID, preview, scanConfirmKeyboard(scanKey))
 }
