@@ -28,8 +28,19 @@ type WebhookHandler struct {
 
 	// pendingScans holds OCR results awaiting user confirmation (sandbox mode).
 	// Key: UUID string. Auto-expired after 5 minutes.
-	pendingScans   map[string]*PendingScan
-	pendingMu      sync.Mutex
+	pendingScans map[string]*PendingScan
+	pendingMu    sync.Mutex
+
+	// scanOnlyUsers holds chatIDs in persistent "scan batch" mode.
+	// Mode stays active until user sends /stop. Each photo refreshes the TTL.
+	scanOnlyUsers map[int64]*scanOnlyState
+	scanOnlyMu    sync.Mutex
+}
+
+// scanOnlyState tracks per-user scan batch mode.
+type scanOnlyState struct {
+	LastActive time.Time
+	Count      int // number of receipts scanned so far
 }
 
 // PendingScan holds a scan result waiting for user's ✅ or ❌ confirmation.
@@ -42,16 +53,17 @@ type PendingScan struct {
 
 func NewWebhookHandler(cfg *config.Config, router *gateway.GatewayRouter) *WebhookHandler {
 	h := &WebhookHandler{
-		cfg:          cfg,
-		router:       router,
-		pendingScans: make(map[string]*PendingScan),
+		cfg:           cfg,
+		router:        router,
+		pendingScans:  make(map[string]*PendingScan),
+		scanOnlyUsers: make(map[int64]*scanOnlyState),
 	}
-	// Background goroutine to clean up expired pending scans (TTL = 5 minutes)
 	go h.cleanupExpiredScans()
 	return h
 }
 
-// cleanupExpiredScans removes pendingScans older than 5 minutes every minute.
+// cleanupExpiredScans removes pendingScans and scanOnlyUsers older than 10 minutes.
+// scanOnlyUsers TTL resets on each photo — if idle for 10 minutes, auto-exit.
 func (h *WebhookHandler) cleanupExpiredScans() {
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
@@ -63,6 +75,14 @@ func (h *WebhookHandler) cleanupExpiredScans() {
 			}
 		}
 		h.pendingMu.Unlock()
+
+		h.scanOnlyMu.Lock()
+		for chatID, st := range h.scanOnlyUsers {
+			if time.Since(st.LastActive) > 10*time.Minute {
+				delete(h.scanOnlyUsers, chatID)
+			}
+		}
+		h.scanOnlyMu.Unlock()
 	}
 }
 
@@ -194,6 +214,34 @@ func (h *WebhookHandler) handleCallbackQuery(ctx context.Context, cq *CallbackQu
 	case data == "btn_cara_link":
 		editMessage(token, chatID, msgID, linkGuideText(), mainMenuKeyboard(false))
 
+	case data == "btn_scan_struk":
+		h.scanOnlyMu.Lock()
+		h.scanOnlyUsers[chatID] = &scanOnlyState{LastActive: time.Now(), Count: 0}
+		h.scanOnlyMu.Unlock()
+		editMessage(token, chatID, msgID,
+			"📸 *Mode Scan Struk — Batch Mode*\n\n"+
+				"Kirim foto struk satu per satu.\n"+
+				"Setiap struk akan dianalisis AI dan dikirim sebagai PDF.\n"+
+				"*Tidak disimpan ke FinTrack.*\n\n"+
+				"Ketik /stop atau klik tombol di bawah jika selesai.",
+			map[string]interface{}{
+				"inline_keyboard": [][]map[string]string{
+					{{"text": "⏹ Selesai Scan", "callback_data": "stop_scan_mode"}},
+				},
+			})
+
+	case data == "cancel_scan_mode", data == "stop_scan_mode":
+		h.scanOnlyMu.Lock()
+		st := h.scanOnlyUsers[chatID]
+		delete(h.scanOnlyUsers, chatID)
+		h.scanOnlyMu.Unlock()
+		count := 0
+		if st != nil {
+			count = st.Count
+		}
+		summary := fmt.Sprintf("✅ *Mode Scan Selesai*\n\n📊 Total struk discan: *%d buah*\n\nKembali ke menu utama.", count)
+		editMessage(token, chatID, msgID, summary, mainMenuKeyboard(isLinked))
+
 	// ── Scan Sandbox Callbacks ─────────────────────────────────────────────
 
 	case strings.HasPrefix(data, "confirm_scan:"):
@@ -301,6 +349,34 @@ func (h *WebhookHandler) handleMessage(ctx context.Context, msg *Message) {
 		sendWithKeyboard(token, chatID, welcomeText(name, isLinked), mainMenuKeyboard(isLinked))
 		return
 
+	case strings.HasPrefix(text, "/stop"), strings.HasPrefix(text, "/selesai"):
+		h.scanOnlyMu.Lock()
+		st := h.scanOnlyUsers[chatID]
+		delete(h.scanOnlyUsers, chatID)
+		h.scanOnlyMu.Unlock()
+		if st != nil {
+			_, isLinked := h.router.GetBinding(ctx, chatIDStr)
+			sendWithKeyboard(token, chatID,
+				fmt.Sprintf("✅ *Mode Scan Selesai*\n\n📊 Total struk discan: *%d buah*\n\nKembali ke menu utama.", st.Count),
+				mainMenuKeyboard(isLinked))
+		} else {
+			_, isLinked := h.router.GetBinding(ctx, chatIDStr)
+			sendWithKeyboard(token, chatID, welcomeText(name, isLinked), mainMenuKeyboard(isLinked))
+		}
+		return
+
+	case strings.HasPrefix(text, "/scan"), strings.HasPrefix(text, "/struk"):
+		h.scanOnlyMu.Lock()
+		h.scanOnlyUsers[chatID] = &scanOnlyState{LastActive: time.Now(), Count: 0}
+		h.scanOnlyMu.Unlock()
+		sendReply(token, chatID,
+			"📸 *Mode Scan Struk — Batch Mode*\n\n"+
+				"Kirim foto struk satu per satu.\n"+
+				"Setiap struk akan dianalisis AI dan dikirim sebagai PDF.\n"+
+				"*Tidak disimpan ke FinTrack.*\n\n"+
+				"Ketik */stop* atau */selesai* jika sudah selesai.")
+		return
+
 	case strings.HasPrefix(text, "/link"):
 		parts := strings.Fields(text)
 		if len(parts) < 2 {
@@ -330,6 +406,17 @@ func (h *WebhookHandler) handleMessage(ctx context.Context, msg *Message) {
 	case strings.HasPrefix(text, "/akun"):
 		sendReply(token, chatID, h.router.GetAccountDetail(ctx, userID))
 
+	case strings.HasPrefix(text, "/scan"), strings.HasPrefix(text, "/struk"):
+		h.scanOnlyMu.Lock()
+		h.scanOnlyUsers[chatID] = &scanOnlyState{LastActive: time.Now(), Count: 0}
+		h.scanOnlyMu.Unlock()
+		sendReply(token, chatID,
+			"📸 *Mode Scan Struk — Batch Mode*\n\n"+
+				"Kirim foto struk satu per satu.\n"+
+				"Setiap struk akan dianalisis AI dan dikirim sebagai PDF.\n"+
+				"*Tidak disimpan ke FinTrack.*\n\n"+
+				"Ketik */stop* atau */selesai* jika sudah selesai.")
+
 	default:
 		// Default: attempt to parse as expense entry
 		parsed, err := parser.ParseMessage(text)
@@ -352,10 +439,13 @@ func mainMenuKeyboard(isLinked bool) map[string]interface{} {
 		},
 		{
 			{"text": "👤 Akun Saya", "callback_data": "btn_akun"},
-			{"text": "📋 Panduan Catat", "callback_data": "btn_panduan"},
+			{"text": "📸 Scan Struk", "callback_data": "btn_scan_struk"},
 		},
 		{
+			{"text": "📋 Panduan Catat", "callback_data": "btn_panduan"},
 			{"text": "🔄 Refresh", "callback_data": "btn_refresh"},
+		},
+		{
 			{"text": "🌐 Buka Dashboard", "url": "https://fintrack.home-sumbul.my.id"},
 		},
 	}
@@ -542,6 +632,8 @@ func SetMyCommands(token string) {
 			{"command": "saldo", "description": "Lihat saldo yang bisa dibelanjakan"},
 			{"command": "summary", "description": "Rekap pengeluaran bulan ini"},
 			{"command": "akun", "description": "Detail profil akun keuangan"},
+			{"command": "scan", "description": "Scan banyak struk (batch, tanpa simpan ke FinTrack)"},
+			{"command": "stop", "description": "Selesai scan struk, kembali ke menu"},
 			{"command": "link", "description": "Hubungkan akun: /link [kode]"},
 			{"command": "help", "description": "Panduan format pencatatan"},
 		},
@@ -576,18 +668,37 @@ func (h *WebhookHandler) handlePhoto(ctx context.Context, msg *Message) {
 	chatID := msg.Chat.ID
 	chatIDStr := strconv.FormatInt(chatID, 10)
 
-	// Check if user is linked to FinTrack
-	userID, isLinked := h.router.GetBinding(ctx, chatIDStr)
-	if !isLinked {
-		sendReply(token, chatID, "⚠️ *Akun Telegram Anda belum terhubung*\n\nBuka dashboard FinTrack → Profil → *Telegram*, generate kode, lalu kirim:\n`/link [kode]`")
-		return
+	// ── Determine mode: scan-only (batch) OR sandbox (save to DB) ─────────
+	h.scanOnlyMu.Lock()
+	st, isScanOnly := h.scanOnlyUsers[chatID]
+	if isScanOnly {
+		// Refresh TTL and increment counter — mode stays active
+		st.LastActive = time.Now()
+		st.Count++
+	}
+	h.scanOnlyMu.Unlock()
+
+	// For scan-only mode, skip account link check — anyone can scan
+	// For save mode, user must be linked
+	var userID string
+	if !isScanOnly {
+		var isLinked bool
+		userID, isLinked = h.router.GetBinding(ctx, chatIDStr)
+		if !isLinked {
+			sendReply(token, chatID, "⚠️ *Akun Telegram Anda belum terhubung*\n\nBuka dashboard FinTrack → Profil → *Telegram*, generate kode, lalu kirim:\n`/link [kode]`\n\nAtau gunakan /scan untuk scan struk tanpa akun FinTrack.")
+			return
+		}
 	}
 
 	// 1. Get the largest photo (the last one in the slice)
 	photo := msg.Photo[len(msg.Photo)-1]
 
-	// Send initial status message
-	sendReply(token, chatID, "📸 *Gambar struk diterima.* Sedang menganalisis... Mohon tunggu.")
+	// Send initial status message — show count for batch mode
+	if isScanOnly {
+		sendReply(token, chatID, fmt.Sprintf("📸 *Struk #%d diterima.* Sedang dianalisis AI...\n_Tidak disimpan ke FinTrack. Ketik /stop jika selesai._", st.Count))
+	} else {
+		sendReply(token, chatID, "📸 *Gambar struk diterima.* Sedang menganalisis... Mohon tunggu.")
+	}
 
 	// 2. Call Telegram getFile to retrieve file path
 	fileURL := fmt.Sprintf("https://api.telegram.org/bot%s/getFile?file_id=%s", token, photo.FileID)
@@ -695,7 +806,61 @@ func (h *WebhookHandler) handlePhoto(ctx context.Context, msg *Message) {
 		return
 	}
 
-	// 5. ── SANDBOX MODE: Store result and ask for confirmation ─────────────
+	// 5. ── ROUTE: scan-only OR sandbox ────────────────────────────────────────
+
+	if isScanOnly {
+		// ── SCAN ONLY (BATCH): langsung generate PDF, mode TETAP AKTIF ─────
+		pdfBytes, err := GenerateReceiptPDF(scanRes, 0)
+		if err != nil {
+			log.Printf("[PDF] Generate failed (scan-only): %v", err)
+			sendReply(token, chatID, "⚠️ Gagal generate PDF. Berikut ringkasan scan:\n\n"+formatScanText(scanRes))
+		} else {
+			fileName := fmt.Sprintf("scan_%s_%s.pdf",
+				strings.ReplaceAll(strings.ToLower(scanRes.Merchant), " ", "_"),
+				time.Now().Format("20060102_150405"),
+			)
+			if err := sendDocument(token, chatID, fileName, pdfBytes); err != nil {
+				log.Printf("[PDF] Send failed (scan-only): %v", err)
+				sendReply(token, chatID, "⚠️ Gagal mengirim PDF. Berikut ringkasan scan:\n\n"+formatScanText(scanRes))
+			}
+		}
+
+		// Read current count (already incremented above)
+		h.scanOnlyMu.Lock()
+		curCount := 0
+		if cur := h.scanOnlyUsers[chatID]; cur != nil {
+			curCount = cur.Count
+		}
+		h.scanOnlyMu.Unlock()
+
+		// Store to pending so user can optionally save to FinTrack
+		scanKey := fmt.Sprintf("%d_%d", chatID, time.Now().UnixNano())
+		h.pendingMu.Lock()
+		h.pendingScans[scanKey] = &PendingScan{
+			ScanRes:   scanRes,
+			UserID:    userID,
+			ChatID:    chatID,
+			CreatedAt: time.Now(),
+		}
+		h.pendingMu.Unlock()
+
+		// After PDF, show persistent batch controls
+		sendWithKeyboard(token, chatID,
+			fmt.Sprintf("✅ *Struk #%d selesai dianalisis!*\n\n📸 _Kirim foto struk berikutnya, atau klik Selesai._", curCount),
+			map[string]interface{}{
+				"inline_keyboard": [][]map[string]string{
+					{
+						{"text": "✅ Simpan ke FinTrack", "callback_data": "confirm_scan:" + scanKey},
+					},
+					{
+						{"text": fmt.Sprintf("⏹ Selesai Scan (%d struk)", curCount), "callback_data": "stop_scan_mode"},
+					},
+				},
+			})
+		return
+	}
+
+	// ── SANDBOX MODE: Store result and ask for confirmation ─────────────────
 
 	// Build items preview text
 	itemsDesc := ""
@@ -740,4 +905,25 @@ func (h *WebhookHandler) handlePhoto(ctx context.Context, msg *Message) {
 	)
 
 	sendWithKeyboard(token, chatID, preview, scanConfirmKeyboard(scanKey))
+}
+
+// formatScanText returns a plain-text summary of a scan result.
+// Used as fallback when PDF generation or sending fails.
+func formatScanText(s ScanResponse) string {
+	itemsDesc := ""
+	for _, item := range s.Items {
+		itemsDesc += fmt.Sprintf("  • %s (%.0f)\n", item.Name, item.Price)
+	}
+	if itemsDesc == "" {
+		itemsDesc = "  • (tidak ada detail item)\n"
+	}
+	return fmt.Sprintf(
+		"🏪 *Merchant:* %s\n"+
+			"📅 *Tanggal:* %s\n"+
+			"💰 *Total:* %s %.0f\n"+
+			"📂 *Kategori:* %s\n\n"+
+			"🛒 *Item:*\n%s\n"+
+			"💬 *Analisis:* %s",
+		s.Merchant, s.Date, s.Currency, s.Total, s.Category, itemsDesc, s.Analysis,
+	)
 }
