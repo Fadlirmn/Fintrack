@@ -148,23 +148,6 @@ func (h *WebhookHandler) handleCallbackQuery(ctx context.Context, cq *CallbackQu
 
 	case "btn_cara_link":
 		editMessage(token, chatID, msgID, linkGuideText(), mainMenuKeyboard(false))
-
-	// ── Home Server callbacks ─────────────────────────────────────────────
-	case "btn_server_status":
-		editMessage(token, chatID, msgID, h.router.ServerStatus(ctx), serverMenuKeyboard())
-
-	case "btn_server_resources":
-		editMessage(token, chatID, msgID, h.router.ServerResources(ctx), serverMenuKeyboard())
-
-	case "btn_server_devices":
-		editMessage(token, chatID, msgID, h.router.ServerDevices(ctx), serverMenuKeyboard())
-
-	// ── n8n callbacks ─────────────────────────────────────────────────────
-	case "btn_n8n_menu":
-		editMessage(token, chatID, msgID, n8nMenuText(), n8nMenuKeyboard())
-
-	case "btn_n8n_list":
-		editMessage(token, chatID, msgID, h.router.N8NListWorkflows(ctx), n8nMenuKeyboard())
 	}
 }
 
@@ -198,80 +181,6 @@ func (h *WebhookHandler) handleMessage(ctx context.Context, msg *Message) {
 		reply := h.router.LinkAccount(ctx, chatIDStr, parts[1], name)
 		_, isLinked := h.router.GetBinding(ctx, chatIDStr)
 		sendWithKeyboard(token, chatID, reply, mainMenuKeyboard(isLinked))
-		return
-
-	// ── Server commands ───────────────────────────────────────────────────
-	case strings.HasPrefix(text, "/server"):
-		parts := strings.Fields(text)
-		subcmd := ""
-		if len(parts) > 1 {
-			subcmd = parts[1]
-		}
-		switch subcmd {
-		case "status":
-			sendReply(token, chatID, h.router.ServerStatus(ctx))
-		case "resources":
-			sendReply(token, chatID, h.router.ServerResources(ctx))
-		case "devices":
-			sendReply(token, chatID, h.router.ServerDevices(ctx))
-		default:
-			sendWithKeyboard(token, chatID, "🖥️ *Home Server*\nPilih aksi:", serverMenuKeyboard())
-		}
-		return
-
-	case strings.HasPrefix(text, "/pc"):
-		parts := strings.Fields(text)
-		if len(parts) < 2 {
-			sendReply(token, chatID, "❓ Format: `/pc sleep|shutdown|reboot`")
-			return
-		}
-		action := strings.ToLower(parts[1])
-		allowed := map[string]bool{"sleep": true, "shutdown": true, "reboot": true}
-		if !allowed[action] {
-			sendReply(token, chatID, "❌ Aksi tidak dikenal. Gunakan: `sleep`, `shutdown`, atau `reboot`.")
-			return
-		}
-		sendReply(token, chatID, h.router.PCAction(ctx, action))
-		return
-
-	case strings.HasPrefix(text, "/run"):
-		parts := strings.Fields(text)
-		if len(parts) < 2 {
-			sendReply(token, chatID, "❓ Format: `/run [nama_script]`")
-			return
-		}
-		sendReply(token, chatID, h.router.RunScript(ctx, parts[1]))
-		return
-
-	// ── n8n commands ──────────────────────────────────────────────────────
-	case strings.HasPrefix(text, "/n8n"):
-		parts := strings.Fields(text)
-		subcmd := ""
-		if len(parts) > 1 {
-			subcmd = parts[1]
-		}
-		switch subcmd {
-		case "list":
-			sendReply(token, chatID, h.router.N8NListWorkflows(ctx))
-		case "run":
-			if len(parts) < 3 {
-				sendReply(token, chatID, "❓ Format: `/n8n run <webhook-path>`\n\nContoh: `/n8n run my-workflow`")
-				return
-			}
-			webhookPath := parts[2]
-			// Optional: sisa parts sebagai simple payload
-			var payload map[string]interface{}
-			if len(parts) > 3 {
-				payload = map[string]interface{}{
-					"args": strings.Join(parts[3:], " "),
-					"chat_id": chatIDStr,
-					"user":    name,
-				}
-			}
-			sendReply(token, chatID, h.router.N8NTrigger(ctx, webhookPath, payload))
-		default:
-			sendWithKeyboard(token, chatID, n8nMenuText(), n8nMenuKeyboard())
-		}
 		return
 	}
 
@@ -314,10 +223,6 @@ func mainMenuKeyboard(isLinked bool) map[string]interface{} {
 			{"text": "🔄 Refresh", "callback_data": "btn_refresh"},
 		},
 		{
-			{"text": "🖥️ Server", "callback_data": "btn_server_status"},
-			{"text": "🔁 n8n", "callback_data": "btn_n8n_menu"},
-		},
-		{
 			{"text": "🌐 Buka Dashboard", "url": "https://fintrack.home-sumbul.my.id"},
 		},
 	}
@@ -329,42 +234,6 @@ func mainMenuKeyboard(isLinked bool) map[string]interface{} {
 	return map[string]interface{}{"inline_keyboard": rows}
 }
 
-func serverMenuKeyboard() map[string]interface{} {
-	return map[string]interface{}{
-		"inline_keyboard": [][]map[string]string{
-			{
-				{"text": "📊 Resources", "callback_data": "btn_server_resources"},
-				{"text": "📡 Devices", "callback_data": "btn_server_devices"},
-			},
-			{
-				{"text": "🖥️ Status", "callback_data": "btn_server_status"},
-				{"text": "🏠 Menu Utama", "callback_data": "btn_menu"},
-			},
-		},
-	}
-}
-
-func n8nMenuKeyboard() map[string]interface{} {
-	return map[string]interface{}{
-		"inline_keyboard": [][]map[string]string{
-			{
-				{"text": "📋 List Workflows", "callback_data": "btn_n8n_list"},
-			},
-			{
-				{"text": "🏠 Menu Utama", "callback_data": "btn_menu"},
-			},
-		},
-	}
-}
-
-func n8nMenuText() string {
-	return "🔁 *n8n Automation*\n━━━━━━━━━━━━━━━━\n" +
-		"Kelola dan trigger workflow otomatisasi kamu.\n\n" +
-		"*Commands:*\n" +
-		"`/n8n list` — Daftar semua workflow\n" +
-		"`/n8n run <webhook-path>` — Trigger workflow\n\n" +
-		"_Webhook path diset di node Webhook n8n kamu._"
-}
 
 func afterSaveKeyboard() map[string]interface{} {
 	return map[string]interface{}{
@@ -428,8 +297,6 @@ func guideText() string {
 		"*Perintah tersedia:*\n" +
 		"`/saldo` — Saldo yang bisa dibelanjakan\n" +
 		"`/summary` — Rekap pengeluaran bulan ini\n" +
-		"`/server` — Kontrol home server\n" +
-		"`/pc sleep|shutdown|reboot` — Kontrol PC\n" +
 		"`/menu` — Kembali ke menu utama"
 }
 
@@ -494,10 +361,6 @@ func SetMyCommands(token string) {
 			{"command": "saldo", "description": "Lihat saldo yang bisa dibelanjakan"},
 			{"command": "summary", "description": "Rekap pengeluaran bulan ini"},
 			{"command": "link", "description": "Hubungkan akun: /link [kode]"},
-			{"command": "server", "description": "Home server: /server status|resources|devices"},
-			{"command": "pc", "description": "Kontrol PC: /pc sleep|shutdown|reboot"},
-			{"command": "run", "description": "Jalankan script: /run [nama]"},
-			{"command": "n8n", "description": "n8n automation: /n8n list | /n8n run [webhook]"},
 			{"command": "help", "description": "Panduan format pencatatan"},
 		},
 	})

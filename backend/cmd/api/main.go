@@ -88,6 +88,11 @@ func main() {
 	mux.Handle("PUT /api/v1/fixed-expenses/{id}", authMiddleware(http.HandlerFunc(feHandler.Update)))
 	mux.Handle("DELETE /api/v1/fixed-expenses/{id}", authMiddleware(http.HandlerFunc(feHandler.Delete)))
 
+	// ── Home Server Proxy (JWT Protected) — forward to home-server service ────
+	homeProxy := newHomeProxyHandler()
+	mux.Handle("GET /api/v1/home/status", authMiddleware(http.HandlerFunc(homeProxy.GetStatus)))
+	mux.Handle("GET /api/v1/home/resources", authMiddleware(http.HandlerFunc(homeProxy.GetResources)))
+
 	// ── Internal Routes (API-key Protected) — used by bot-gateway ─────────
 	mux.Handle("GET /internal/v1/binding", apiKeyMiddleware(http.HandlerFunc(internalTxHandler.GetBinding)))
 	mux.Handle("POST /internal/v1/link", apiKeyMiddleware(http.HandlerFunc(internalTxHandler.LinkAccount)))
