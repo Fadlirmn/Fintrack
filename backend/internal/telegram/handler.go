@@ -317,6 +317,9 @@ func mainMenuKeyboard(isLinked bool) map[string]interface{} {
 			{"text": "🖥️ Server", "callback_data": "btn_server_status"},
 			{"text": "🔁 n8n", "callback_data": "btn_n8n_menu"},
 		},
+		{
+			{"text": "🌐 Buka Dashboard", "url": "https://fintrack.home-sumbul.my.id"},
+		},
 	}
 	if !isLinked {
 		rows = append(rows, []map[string]string{
