@@ -18,17 +18,17 @@ RUN go mod download
 # Copy all source
 COPY . .
 
-# Build API binary
+# Build API binary — compile seluruh package (bukan satu file)
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags="-w -s" \
     -o /app/api \
-    ./cmd/api/main.go
+    ./cmd/api/
 
-# Build Bot binary
+# Build Bot binary — compile seluruh package
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags="-w -s" \
     -o /app/bot \
-    ./cmd/bot/main.go
+    ./cmd/bot/
 
 # ── API Runner ────────────────────────────────────────────
 FROM alpine:3.19 AS api
