@@ -41,7 +41,9 @@ func (p *BotPoller) Start(ctx context.Context) {
 	client := &http.Client{Timeout: 40 * time.Second}
 
 	// Build a handler that shares our router
-	handler := &WebhookHandler{cfg: p.cfg, router: p.router}
+	// NOTE: must use NewWebhookHandler() — not a struct literal — so that
+	// pendingScans, scanOnlyUsers, and mediaGroups maps are properly initialised.
+	handler := NewWebhookHandler(p.cfg, p.router)
 
 	for {
 		select {
