@@ -139,10 +139,13 @@ services:
   #  Frontend — Next.js Dashboard
   #  Koneksi ke API via Docker internal network
   #  Diekspos ke publik via cloudflared (port 3000)
+  #
+  #  Set FRONTEND_PATH di .env jika path berbeda dari default:
+  #  FRONTEND_PATH=/home/sumbul/Services/FinTrack-Fronted
   # ─────────────────────────────────────────────
   frontend:
     build:
-      context: ../FinTrack-Fronted
+      context: ${FRONTEND_PATH:-../FinTrack-Fronted}
       dockerfile: Dockerfile
     container_name: fintrack-frontend
     restart: unless-stopped
