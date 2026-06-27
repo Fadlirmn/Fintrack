@@ -169,7 +169,7 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // ── Shared Update Processor ───────────────────────────────────────────────────
 
 func (h *WebhookHandler) processUpdate(update Update) {
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
 	defer cancel()
 
 	if update.CallbackQuery != nil {
