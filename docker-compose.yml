@@ -21,8 +21,10 @@ services:
       POSTGRES_DB:       fintrack
       POSTGRES_USER:     fintrack
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-fintrack_secret}
+      POSTGRES_MULTIPLE_DATABASES: ${POSTGRES_MULTIPLE_DATABASES:-fintrack}
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
     networks:
       - fintrack-net
     healthcheck:

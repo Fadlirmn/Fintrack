@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `postgres-init/init-user-db.sh` (Why: Dynamically initializes multiple postgres databases for separate projects on startup).
+- `DEPLOY_LOCAL_STACK.md` (Why: Comprehensive deployment guide for the local home server multi-stack topology).
+
+### Changed
+- `docker-compose.yml` (Why: Reactivated the `home-server` container and configured PostgreSQL to mount the initialization script).
+
 ### Fixed
 - `FinTrack-Fronted/src/app/dashboard/page.tsx` (Why: Pisahkan `telegramLoading` state dari shared `loading` state — tombol "Generate Kode Tautan Baru" ikut disabled saat operasi lain (tambah transaksi, simpan profil) sedang loading, menyebabkan tidak bisa diklik.)
 
