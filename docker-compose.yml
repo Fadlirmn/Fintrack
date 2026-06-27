@@ -83,7 +83,7 @@ services:
       fintrack-api:
         condition: service_healthy
     extra_hosts:
-      - "expense-tracker-api:host-gateway"
+      - "expense-tracker-api:172.18.0.1"
     environment:
       TELEGRAM_BOT_TOKEN:   ${TELEGRAM_BOT_TOKEN}
       FINTRACK_API_URL:     http://fintrack-api:8080
