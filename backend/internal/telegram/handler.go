@@ -905,7 +905,7 @@ func (h *WebhookHandler) handlePhoto(ctx context.Context, msg *Message) {
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	client := &http.Client{Timeout: 35 * time.Second}
+	client := &http.Client{Timeout: 120 * time.Second}
 	scanResp, err := client.Do(req)
 	if err != nil {
 		log.Printf("[TG-OCR] Request scan failed: %v", err)
@@ -1150,7 +1150,7 @@ func (h *WebhookHandler) processMediaGroup(ctx context.Context, groupID string) 
 				return
 			}
 			req.Header.Set("Content-Type", writer.FormDataContentType())
-			scanResp, err := (&http.Client{Timeout: 35 * time.Second}).Do(req)
+			scanResp, err := (&http.Client{Timeout: 120 * time.Second}).Do(req)
 			if err != nil {
 				results[idx] = result{idx: idx, err: fmt.Errorf("scan req: %w", err)}
 				return

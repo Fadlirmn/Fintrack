@@ -10,6 +10,7 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 - `docker-compose.yml` (Why: Reactivated the `home-server` container and configured PostgreSQL to mount the initialization script).
+- `backend/internal/telegram/handler.go` (Why: Increased HTTP client timeouts for scan requests from 35 seconds to 120 seconds to accommodate local Ollama LLM inference latency).
 
 ### Fixed
 - `FinTrack-Fronted/src/app/dashboard/page.tsx` (Why: Pisahkan `telegramLoading` state dari shared `loading` state — tombol "Generate Kode Tautan Baru" ikut disabled saat operasi lain (tambah transaksi, simpan profil) sedang loading, menyebabkan tidak bisa diklik.)
